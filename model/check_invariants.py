@@ -47,14 +47,18 @@ for _ in range(100_000):
     if abs((r2/d2)-(reserve/debt)) > 1e-9:
         raise AssertionError('pro-rata invariant')
 
-# Recapitalization retires old junior claims and mints exactly the new equity.
+# Recapitalization restores the configured healthy debt ratio and mints exactly
+# the post-recapitalization residual equity as the new INF series.
 for _ in range(100_000):
     debt=random.uniform(1,1e9)
     reserve=random.uniform(0,debt)
-    shortfall=debt-reserve
-    deposit=shortfall+random.uniform(0.001,1e9)
-    new_inf=deposit-shortfall
+    required_reserve=debt*BPS/MAX_DR
+    min_deposit=required_reserve-reserve
+    deposit=min_deposit+random.uniform(0,1e9)
+    new_inf=reserve+deposit-debt
     new_equity=reserve+deposit-debt
+    if not within(debt,reserve+deposit):
+        raise AssertionError('recapitalization did not restore health')
     if abs(new_inf-new_equity) > 1e-6:
         raise AssertionError('recapitalization invariant')
 

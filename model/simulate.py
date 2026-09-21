@@ -54,10 +54,12 @@ show("after 25% drawdown", s)
 s.reserve *= 0.75
 show("after second -25%", s)
 
-# A recapitalizer fills the NaN shortfall. The old INF series is retired and
-# only the value above the shortfall becomes new INF at $1.
-recap_in = 100_000
-shortfall = max(s.nan - s.reserve, 0.0)
+# A recapitalizer restores the configured 65% maximum debt ratio. The old INF
+# series is retired and the post-recapitalization residual equity becomes new
+# INF at $1.
+max_debt_ratio = 0.65
+required_reserve = s.nan / max_debt_ratio
+recap_in = required_reserve - s.reserve
 s.reserve += recap_in
-s.inf = recap_in - shortfall
+s.inf = s.reserve - s.nan
 show("after recapitalization", s)

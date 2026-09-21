@@ -42,7 +42,7 @@ fee = usdIn * mintFee
 NaN out = usdIn - fee
 ```
 
-All collateral, including the fee value, stays in the reserve. The transaction must leave `D / R` at or below the immutable maximum.
+All collateral, including the fee value, stays in the reserve. Minting requires a nonzero active INF supply and the transaction must leave `D / R` at or below the immutable maximum.
 
 ### Defund
 
@@ -62,14 +62,15 @@ This preserves the reserve/debt ratio across redemptions, apart from conservativ
 
 ### Recapitalize
 
-At zero junior equity, a recapitalizer must deposit more value than the senior shortfall:
+At zero junior equity, a recapitalizer must restore the reserve to the configured normal debt limit:
 
 ```text
-shortfall = D - R
-new INF out = usdIn - shortfall
+required reserve = ceil(D / maxDebtRatio)
+required capital = required reserve - R
+new INF out = R + usdIn - D
 ```
 
-The old INF contract is retired atomically and a new OpenZeppelin-based INF contract becomes active. The new series starts with NAV of $1; the recapitalizer explicitly bears the old senior shortfall. This is a wipeout model, not an auction. Applications must follow `inf()`, `juniorSeries`, and `Recapitalized` rather than assuming INF has a permanent address.
+For outstanding debt, recapitalization therefore exits directly into the Healthy state rather than merely crossing back above 100% collateralization. The old INF contract is retired atomically and a new OpenZeppelin-based INF contract becomes active. The new series starts with NAV of $1; the recapitalizer explicitly bears the old senior shortfall and supplies a fresh junior buffer. This is a wipeout model, not an auction. Applications must follow `inf()`, `juniorSeries`, and `Recapitalized` rather than assuming INF has a permanent address.
 
 If the last insolvent NaN redemption exhausts both debt and collateral, `recapitalize` can similarly retire the worthless INF series and restart the system without a senior shortfall.
 
@@ -97,6 +98,8 @@ The reserve has no owner and no upgrade path. These values are fixed at deployme
 - redemption fee.
 
 This removes governance-key risk but rules out emergency intervention. Users trust the immutable code, wstETH/Lido mechanics, the configured oracle feeds, and Ethereum execution.
+
+Oracle freshness is also a liveness dependency. If either configured feed becomes stale or invalid, every price-dependent operation, including NaN redemption, halts until valid oracle data resumes. A terminal oracle-failure settlement path remains an unresolved design question rather than being hidden behind an admin key.
 
 ## Launch requirements
 
