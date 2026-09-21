@@ -1,98 +1,110 @@
-# NaN v0 design
+# NaN protocol design
 
-NaN v0 is a clean-room reimplementation of the core economic idea behind USM/FUM: one pooled volatile reserve split into a senior stable claim and a junior residual claim.
-
-## Assets
-
-- **wstETH** — sole reserve asset.
-- **NaN** — senior token targeting 1 USD.
-- **INF** — junior token owning residual reserve value and absorbing losses before NaN.
-
-There are no user CDPs, liquidations, governance token, savings wrapper, privacy layer or secondary yield strategy in v0.
+NaN divides one pooled wstETH reserve into a senior stable claim and a junior residual claim. It is inspired by the senior/junior reserve idea explored by USM/FUM, but this repository is a clean-room implementation with a simpler immutable state machine.
 
 ## Accounting
 
-All accounting uses 18-decimal USD values.
+All USD values use 18 decimals. The collateral token must also use 18 decimals.
 
 ```text
-R = USD value of wstETH reserve
+R = oracle USD value of reserve wstETH
 D = NaN total supply
 E = max(R - D, 0)
-S = INF total supply
+S = active INF total supply
 
 INF NAV = E / S
 ```
 
-wstETH staking rewards appear as an increase in the USD value of each wstETH token. NaN liabilities do not rebase, therefore reserve yield accrues to INF.
+One NaN represents one dollar of senior debt while the reserve is solvent. wstETH staking rewards increase `R` without increasing `D`, so they accrue entirely to INF.
 
-## Operations
+All conversions round down in favor of the reserve. The minimum reserve used by the debt-ratio limit rounds up.
 
-### fund
+## States
 
-Deposit wstETH and mint INF at current residual NAV. The first INF is bootstrapped at $1.
+| State | Definition | Consequence |
+| --- | --- | --- |
+| No debt | `D == 0` | INF owns the reserve |
+| Healthy | `R > D` and `D / R <= maxDebtRatio` | All ordinary operations available |
+| Stressed | `R > D` and `D / R > maxDebtRatio` | Funding and redemption available; mint/defund remain constrained |
+| Insolvent | `R <= D` | NaN redeems pro rata; INF NAV is zero; recapitalization available |
 
-If the system is insolvent (`R <= D`), v0 deliberately disables ordinary funding. A separate recapitalisation mechanism should be designed rather than hiding recap auction policy inside the basic NAV formula.
+## State transitions
 
-### defund
+### Fund
 
-Burn INF and withdraw its proportional residual value. The transaction is rejected if it would leave:
+Funding deposits wstETH and mints INF at the current residual NAV. The initial INF series bootstraps at $1. Funding at zero equity is disabled because any ordinary NAV formula would transfer value from the recapitalizer to underwater junior holders.
 
-```text
-D / R > MAX_DEBT_RATIO
-```
-
-The prototype uses 65%, equivalent to a minimum normal collateral ratio of about 153.85%.
-
-### mint
-
-Deposit wstETH and receive:
+### Mint
 
 ```text
-NaN out = collateral USD value - mint fee
+usdIn = collateralIn * oraclePrice
+fee = usdIn * mintFee
+NaN out = usdIn - fee
 ```
 
-The full collateral stays in the reserve. The fee therefore accrues to INF. Minting is rejected if the post-trade debt ratio exceeds the configured maximum.
+All collateral, including the fee value, stays in the reserve. The transaction must leave `D / R` at or below the immutable maximum.
 
-### redeem
+### Defund
 
-While solvent, one NaN redeems for $1 of wstETH minus the redemption fee. The fee stays in the reserve for INF.
+INF burns for its proportional residual value. The conversion rounds down, and the post-withdrawal reserve must still satisfy the maximum debt ratio. When there is no NaN debt, all INF can redeem the full reserve.
 
-If the reserve becomes insolvent after a market gap, the redemption price automatically becomes:
+### Redeem
+
+When `R > D`, NaN redeems at $1 less the redemption fee. The retained fee increases INF NAV and redemption improves the collateral ratio.
+
+When `R <= D`, the explicit fee is disabled and the gross redemption price is:
 
 ```text
-R / D dollars per NaN
+NaN redemption price = R / D
 ```
 
-and the explicit redemption fee is disabled. This makes redemptions pro-rata and prevents first redeemers from extracting $1 while leaving later holders with the loss.
+This preserves the reserve/debt ratio across redemptions, apart from conservative rounding. The final insolvent redeemer receives all remaining collateral so rounding dust cannot become trapped.
+
+### Recapitalize
+
+At zero junior equity, a recapitalizer must deposit more value than the senior shortfall:
+
+```text
+shortfall = D - R
+new INF out = usdIn - shortfall
+```
+
+The old INF contract is retired atomically and a new OpenZeppelin-based INF contract becomes active. The new series starts with NAV of $1; the recapitalizer explicitly bears the old senior shortfall. This is a wipeout model, not an auction. Applications must follow `inf()`, `juniorSeries`, and `Recapitalized` rather than assuming INF has a permanent address.
+
+If the last insolvent NaN redemption exhausts both debt and collateral, `recapitalize` can similarly retire the worthless INF series and restart the system without a senior shortfall.
 
 ## Oracle
 
-The prototype oracle computes:
+The oracle uses three inputs:
 
 ```text
-wstETH/USD = ETH/USD * stETH-per-wstETH
+effective stETH/ETH = min(1, market stETH/ETH)
+wstETH/ETH = stEthPerToken() * effective stETH/ETH
+wstETH/USD = wstETH/ETH * ETH/USD
 ```
 
-using a Chainlink ETH/USD feed and the canonical `wstETH.stEthPerToken()` conversion rate.
+The ETH/USD and stETH/ETH feeds are Chainlink-compatible and independently checked for positive answers, timestamps, staleness, and round completion. Capping stETH at 1 ETH prevents a market premium from inflating collateral value; using the market rate below 1 ETH protects the reserve during a depeg. A production deployment must validate feed liquidity, heartbeat, deviation thresholds, and network-specific failure modes.
 
-This is intentionally only a prototype. A production oracle should additionally protect against a material stETH/ETH market depeg, likely by valuing the collateral at the lower of protocol redemption value and a robust market-price reference.
+## Immutability and trust model
 
-## Fixed launch parameters
+The reserve has no owner and no upgrade path. These values are fixed at deployment:
 
-The reserve contract is ownerless and non-upgradeable. Parameters are immutable at deployment:
-
+- wstETH collateral address;
+- oracle address and its feed addresses;
+- feed staleness limit;
 - maximum debt ratio;
 - mint fee;
-- redemption fee;
-- collateral token;
-- oracle.
+- redemption fee.
 
-This follows the minimalist/immutable spirit of USM while avoiding its older moving bid/ask state machine.
+This removes governance-key risk but rules out emergency intervention. Users trust the immutable code, wstETH/Lido mechanics, the configured oracle feeds, and Ethereum execution.
 
-## Deliberately unresolved before production
+## Launch requirements
 
-1. **Recapitalisation while insolvent.** This is the largest missing economic component. USM used special FUM buy-price behaviour; NaN should model alternatives before selecting one.
-2. **Oracle depeg protection.** `stEthPerToken()` alone is not a market-price guarantee.
-3. **Launch/bootstrap procedure.** We need a clear initial INF funding target before NaN minting opens.
-4. **Parameter selection.** 65% max debt ratio and 10 bp mint/redeem fees are prototype values, not recommendations.
-5. **Formal invariants and external audit.** Required before any value is put at risk.
+Before a real deployment accepts NaN minting:
+
+1. Independently audit the contracts and economic model.
+2. Validate oracle addresses, feed behavior, heartbeat, and depeg scenarios on the target chain.
+3. Select parameters using stress tests rather than the repository defaults.
+4. Seed a publicly disclosed INF buffer large enough for the intended NaN issuance.
+5. Publish verified source, deployment transactions, contract addresses, and monitoring.
+6. Ensure integrators handle INF series retirement and do not list retired INF as an active reserve claim.

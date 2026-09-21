@@ -47,4 +47,15 @@ for _ in range(100_000):
     if abs((r2/d2)-(reserve/debt)) > 1e-9:
         raise AssertionError('pro-rata invariant')
 
+# Recapitalization retires old junior claims and mints exactly the new equity.
+for _ in range(100_000):
+    debt=random.uniform(1,1e9)
+    reserve=random.uniform(0,debt)
+    shortfall=debt-reserve
+    deposit=shortfall+random.uniform(0.001,1e9)
+    new_inf=deposit-shortfall
+    new_equity=reserve+deposit-debt
+    if abs(new_inf-new_equity) > 1e-6:
+        raise AssertionError('recapitalization invariant')
+
 print('100k randomized checks per invariant: OK')

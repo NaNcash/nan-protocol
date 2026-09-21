@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-import {ERC20} from "./ERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 
-contract INFToken is ERC20 {
+/// @notice The junior residual claim on the NaN reserve.
+/// @dev A reserve may retire this token during insolvency and deploy a new junior series.
+contract INFToken is ERC20, ERC20Permit {
     error OnlyReserve();
+    error ZeroAddress();
 
     address public immutable reserve;
 
-    constructor(address reserve_) ERC20("NaN Junior", "INF") {
+    constructor(address reserve_) ERC20("NaN Junior", "INF") ERC20Permit("NaN Junior") {
+        if (reserve_ == address(0)) revert ZeroAddress();
         reserve = reserve_;
     }
 

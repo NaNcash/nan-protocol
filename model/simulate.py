@@ -53,3 +53,11 @@ show("after 25% drawdown", s)
 # Another 25% drawdown from that level.
 s.reserve *= 0.75
 show("after second -25%", s)
+
+# A recapitalizer fills the NaN shortfall. The old INF series is retired and
+# only the value above the shortfall becomes new INF at $1.
+recap_in = 100_000
+shortfall = max(s.nan - s.reserve, 0.0)
+s.reserve += recap_in
+s.inf = recap_in - shortfall
+show("after recapitalization", s)

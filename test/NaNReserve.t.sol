@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-import {TestBase} from "./TestBase.sol";
-import {MockERC20} from "./mocks/MockERC20.sol";
+import {Test} from "forge-std/Test.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {MockERC20, MockERC20Decimals, MockFeeOnTransferERC20} from "./mocks/MockERC20.sol";
 import {MockOracle} from "./mocks/MockOracle.sol";
 import {NaNReserve} from "../src/NaNReserve.sol";
 import {NaNToken} from "../src/NaNToken.sol";
 import {INFToken} from "../src/INFToken.sol";
 
-contract NaNReserveTest is TestBase {
+contract NaNReserveTest is Test {
     uint256 internal constant WAD = 1e18;
     address internal constant ALICE = address(0xA11CE);
     address internal constant BOB = address(0xB0B);
@@ -22,12 +23,12 @@ contract NaNReserveTest is TestBase {
     function setUp() public {
         wstETH = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
-        reserve = new NaNReserve(wstETH, oracle, 6_500, 10, 10); // 65% max debt ratio, 10 bps each way
+        reserve = new NaNReserve(wstETH, oracle, 6_500, 10, 10);
         nan = reserve.nan();
         inf = reserve.inf();
 
-        wstETH.mint(ALICE, 1_000 * WAD);
-        wstETH.mint(BOB, 1_000 * WAD);
+        wstETH.mint(ALICE, 2_000 * WAD);
+        wstETH.mint(BOB, 2_000 * WAD);
 
         vm.prank(ALICE);
         wstETH.approve(address(reserve), type(uint256).max);
@@ -37,43 +38,111 @@ contract NaNReserveTest is TestBase {
 
     function _bootstrap() internal {
         vm.prank(ALICE);
-        reserve.fund(100 * WAD, 0, ALICE); // $300k junior capital
+        reserve.fund(100 * WAD, 0, ALICE);
     }
 
     function _bootstrapAndMint() internal {
         _bootstrap();
         vm.prank(BOB);
-        reserve.mint(180 * WAD, 0, BOB); // $540k collateral -> 539,460 NaN after 10 bps fee
+        reserve.mint(180 * WAD, 0, BOB);
+    }
+
+    function testDeploymentCreatesPermitTokensAndFirstJuniorSeries() public view {
+        assertEq(nan.name(), "NaN");
+        assertEq(inf.name(), "NaN Junior");
+        assertEq(nan.reserve(), address(reserve));
+        assertEq(inf.reserve(), address(reserve));
+        assertEq(reserve.juniorSeries(), 1);
+        assertTrue(nan.DOMAIN_SEPARATOR() != bytes32(0));
+        assertTrue(inf.DOMAIN_SEPARATOR() != bytes32(0));
+    }
+
+    function testConstructorRejectsNon18DecimalCollateral() public {
+        MockERC20Decimals usdc = new MockERC20Decimals("USD Coin", "USDC", 6);
+        vm.expectRevert(NaNReserve.UnsupportedCollateralDecimals.selector);
+        new NaNReserve(usdc, oracle, 6_500, 10, 10);
+    }
+
+    function testConstructorRejectsInvalidParameters() public {
+        vm.expectRevert(NaNReserve.ZeroAddress.selector);
+        new NaNReserve(MockERC20(address(0)), oracle, 6_500, 10, 10);
+
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, 10_000, 10, 10);
+
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, 6_500, 10_000, 10);
     }
 
     function testInitialFundingStartsInfAtOneDollar() public {
         _bootstrap();
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD, "wrong bootstrap INF amount");
-        assertEq(reserve.infPriceUsd(), WAD, "INF should bootstrap at $1");
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(reserve.infPriceUsd(), WAD);
+        assertEq(reserve.reserveUsd(), 300_000 * WAD);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.NoDebt));
     }
 
-    function testMintRespectsDebtRatio() public {
+    function testHealthAndPriceViewsAcrossMarketStates() public {
+        assertEq(reserve.nanRedemptionPriceUsd(), WAD);
+        assertEq(reserve.collateralRatio(), type(uint256).max);
+        assertEq(reserve.maxDefundableUsd(), 0);
+
         _bootstrapAndMint();
-        assertEq(nan.balanceOf(BOB), 539_460 * WAD, "wrong NaN output");
-        assertLe(reserve.debtRatioBps(), 6_500, "debt ratio exceeded limit");
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Healthy));
+        assertGt(reserve.maxDefundableUsd(), 0);
+
+        oracle.setPrice(2_200 * WAD);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Stressed));
+        assertEq(reserve.maxDefundableUsd(), 0);
+        assertEq(reserve.nanRedemptionPriceUsd(), WAD);
+
+        oracle.setPrice(1_800 * WAD);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Insolvent));
+        assertLt(reserve.nanRedemptionPriceUsd(), WAD);
     }
 
-    function testMintTooLargeReverts() public {
+    function testFundingUsesCurrentResidualNav() public {
+        _bootstrapAndMint();
+        uint256 priceBefore = reserve.infPriceUsd();
+
+        vm.prank(ALICE);
+        uint256 infOut = reserve.fund(10 * WAD, 0, ALICE);
+
+        assertEq(infOut, 30_000 * WAD * WAD / priceBefore);
+        assertApproxEqAbs(reserve.infPriceUsd(), priceBefore, 1);
+    }
+
+    function testMintRespectsDebtRatioAndLeavesFeeAsEquity() public {
+        _bootstrapAndMint();
+        assertEq(nan.balanceOf(BOB), 539_460 * WAD);
+        assertLe(reserve.debtRatioBps(), 6_500);
+        assertEq(reserve.equityUsd(), 300_540 * WAD);
+    }
+
+    function testMintTooLargeRevertsWithoutPullingCollateral() public {
         _bootstrap();
+        uint256 beforeBalance = wstETH.balanceOf(BOB);
         vm.prank(BOB);
         vm.expectRevert(NaNReserve.DebtRatioTooHigh.selector);
         reserve.mint(200 * WAD, 0, BOB);
+        assertEq(wstETH.balanceOf(BOB), beforeBalance);
     }
 
-    function testWstEthYieldAccruesToInf() public {
+    function testMintSlippageProtection() public {
+        _bootstrap();
+        vm.prank(BOB);
+        vm.expectRevert(NaNReserve.Slippage.selector);
+        reserve.mint(10 * WAD, 29_971 * WAD, BOB);
+    }
+
+    function testWstEthYieldAccruesOnlyToInf() public {
         _bootstrapAndMint();
         uint256 infPriceBefore = reserve.infPriceUsd();
 
-        oracle.setPrice(3_030 * WAD); // model ~1% wstETH appreciation
-        uint256 infPriceAfter = reserve.infPriceUsd();
+        oracle.setPrice(3_030 * WAD);
 
-        assertGt(infPriceAfter, infPriceBefore, "staking yield should accrue to INF");
-        assertEq(nan.totalSupply(), 539_460 * WAD, "NaN liability should not rebase");
+        assertGt(reserve.infPriceUsd(), infPriceBefore);
+        assertEq(nan.totalSupply(), 539_460 * WAD);
     }
 
     function testDefundCannotBreakCollateralLimit() public {
@@ -85,43 +154,240 @@ contract NaNReserveTest is TestBase {
 
         vm.prank(ALICE);
         reserve.defund(5_000 * WAD, 0, ALICE);
-        assertLe(reserve.debtRatioBps(), 6_500, "defund broke debt-ratio limit");
+        assertLe(reserve.debtRatioBps(), 6_500);
     }
 
-    function testHealthyRedemptionLeavesFeeForInf() public {
+    function testAllInfCanDefundWhenThereIsNoDebt() public {
+        _bootstrap();
+        uint256 infSupply = inf.totalSupply();
+        vm.prank(ALICE);
+        uint256 collateralOut = reserve.defund(infSupply, 100 * WAD, ALICE);
+        assertEq(collateralOut, 100 * WAD);
+        assertEq(inf.totalSupply(), 0);
+        assertEq(reserve.reserveCollateral(), 0);
+    }
+
+    function testFullNoDebtDefundDoesNotTrapRoundingDust() public {
+        _bootstrap();
+        oracle.setPrice(3_333 * WAD + 17);
+        uint256 infSupply = inf.totalSupply();
+
+        vm.prank(ALICE);
+        uint256 collateralOut = reserve.defund(infSupply, 100 * WAD, ALICE);
+
+        assertEq(collateralOut, 100 * WAD);
+        assertEq(reserve.reserveCollateral(), 0);
+    }
+
+    function testCannotRedeemWithoutDebtOrDefundWithoutEquity() public {
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.NoDebt.selector);
+        reserve.redeem(1, 0, ALICE);
+
+        _bootstrapAndMint();
+        oracle.setPrice(1_500 * WAD);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.NoEquity.selector);
+        reserve.defund(1, 0, ALICE);
+    }
+
+    function testHealthyRedemptionLeavesFeeForInfAndImprovesHealth() public {
         _bootstrapAndMint();
         uint256 infPriceBefore = reserve.infPriceUsd();
+        uint256 ratioBefore = reserve.debtRatioBps();
 
         vm.prank(BOB);
-        reserve.redeem(10_000 * WAD, 0, BOB);
+        uint256 collateralOut = reserve.redeem(10_000 * WAD, 0, BOB);
 
-        uint256 infPriceAfter = reserve.infPriceUsd();
-        assertGt(infPriceAfter, infPriceBefore, "redeem fee should accrue to INF");
-        assertLt(reserve.debtRatioBps(), 6_500, "redemption should improve health");
+        assertEq(collateralOut, 3_330 * WAD / 1_000);
+        assertGt(reserve.infPriceUsd(), infPriceBefore);
+        assertLt(reserve.debtRatioBps(), ratioBefore);
     }
 
     function testInsolventRedemptionIsProRataAndFeeFree() public {
         _bootstrapAndMint();
-        oracle.setPrice(1_500 * WAD); // reserve is now below NaN liabilities
-
-        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Insolvent), "expected insolvency");
+        oracle.setPrice(1_500 * WAD);
         uint256 ratioBefore = reserve.collateralRatio();
 
         uint256 bobBefore = wstETH.balanceOf(BOB);
         vm.prank(BOB);
         reserve.redeem(10_000 * WAD, 0, BOB);
-        uint256 received = wstETH.balanceOf(BOB) - bobBefore;
 
-        assertGt(received, 0, "redemption returned nothing");
-        assertApproxEqAbs(reserve.collateralRatio(), ratioBefore, 1e12, "pro-rata redemption changed solvency materially");
+        assertGt(wstETH.balanceOf(BOB) - bobBefore, 0);
+        assertApproxEqAbs(reserve.collateralRatio(), ratioBefore, 2);
     }
 
-    function testInsolventFundingIsExplicitlyNotYetImplemented() public {
+    function testFinalInsolventRedeemerReceivesEveryCollateralUnit() public {
+        _bootstrapAndMint();
+        oracle.setPrice(1_500 * WAD);
+        uint256 collateralBefore = reserve.reserveCollateral();
+        uint256 nanBalance = nan.balanceOf(BOB);
+
+        vm.prank(BOB);
+        uint256 collateralOut = reserve.redeem(nanBalance, 0, BOB);
+
+        assertEq(collateralOut, collateralBefore);
+        assertEq(reserve.reserveCollateral(), 0);
+        assertEq(nan.totalSupply(), 0);
+    }
+
+    function testCanRestartAfterFinalInsolventRedemption() public {
+        _bootstrapAndMint();
+        oracle.setPrice(1_500 * WAD);
+        INFToken retiredInf = reserve.inf();
+        uint256 nanBalance = nan.balanceOf(BOB);
+
+        vm.prank(BOB);
+        reserve.redeem(nanBalance, 0, BOB);
+        vm.prank(ALICE);
+        uint256 infOut = reserve.recapitalize(10 * WAD, 15_000 * WAD, ALICE);
+
+        assertEq(infOut, 15_000 * WAD);
+        assertNotEq(address(reserve.inf()), address(retiredInf));
+        assertEq(reserve.infPriceUsd(), WAD);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.NoDebt));
+    }
+
+    function testFreshEmptyReserveUsesFundRatherThanRecapitalize() public {
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.NotInsolvent.selector);
+        reserve.recapitalize(10 * WAD, 0, ALICE);
+    }
+
+    function testOrdinaryFundingCannotSubsidizeUnderwaterInf() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
 
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.InsolventFundingNotImplemented.selector);
-        reserve.fund(10 * WAD, 0, ALICE);
+        vm.expectRevert(NaNReserve.RecapitalizationRequired.selector);
+        reserve.fund(100 * WAD, 0, ALICE);
+    }
+
+    function testRecapitalizationCoversShortfallAndRetiresOldInf() public {
+        _bootstrapAndMint();
+        oracle.setPrice(1_500 * WAD);
+        INFToken retiredInf = reserve.inf();
+        assertEq(reserve.equityUsd(), 0);
+
+        vm.prank(ALICE);
+        uint256 infOut = reserve.recapitalize(100 * WAD, 30_540 * WAD, ALICE);
+
+        INFToken newInf = reserve.inf();
+        assertNotEq(address(newInf), address(retiredInf));
+        assertEq(reserve.juniorSeries(), 2);
+        assertEq(infOut, 30_540 * WAD);
+        assertEq(newInf.balanceOf(ALICE), infOut);
+        assertEq(newInf.totalSupply(), infOut);
+        assertEq(retiredInf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(reserve.infPriceUsd(), WAD);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Stressed));
+    }
+
+    function testRecapitalizationMustExceedShortfall() public {
+        _bootstrapAndMint();
+        oracle.setPrice(1_500 * WAD);
+
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.InsufficientRecapitalization.selector);
+        reserve.recapitalize(79_640 * WAD / 1_000, 0, ALICE);
+    }
+
+    function testRecapitalizationSlippageProtection() public {
+        _bootstrapAndMint();
+        oracle.setPrice(1_500 * WAD);
+
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.Slippage.selector);
+        reserve.recapitalize(100 * WAD, 30_540 * WAD + 1, ALICE);
+    }
+
+    function testRecapitalizationOnlyDuringInsolvency() public {
+        _bootstrapAndMint();
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.NotInsolvent.selector);
+        reserve.recapitalize(100 * WAD, 0, ALICE);
+    }
+
+    function testRetiredInfCannotWithdrawFromReserve() public {
+        _bootstrapAndMint();
+        oracle.setPrice(1_500 * WAD);
+        INFToken retiredInf = reserve.inf();
+        vm.prank(ALICE);
+        reserve.recapitalize(100 * WAD, 0, BOB);
+
+        vm.prank(BOB);
+        reserve.fund(500 * WAD, 0, BOB);
+
+        vm.prank(ALICE);
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, ALICE, 0, 1 * WAD));
+        reserve.defund(1 * WAD, 0, ALICE);
+
+        assertEq(retiredInf.balanceOf(ALICE), 300_000 * WAD);
+    }
+
+    function testRejectsZeroOraclePrice() public {
+        oracle.setPrice(0);
+        vm.expectRevert(NaNReserve.InvalidPrice.selector);
+        reserve.reserveUsd();
+    }
+
+    function testRejectsFeeOnTransferCollateral() public {
+        MockFeeOnTransferERC20 feeToken = new MockFeeOnTransferERC20();
+        NaNReserve feeReserve = new NaNReserve(feeToken, oracle, 6_500, 10, 10);
+        feeToken.mint(ALICE, 100 * WAD);
+        vm.startPrank(ALICE);
+        feeToken.approve(address(feeReserve), type(uint256).max);
+        vm.expectRevert(NaNReserve.UnsupportedTransferFee.selector);
+        feeReserve.fund(10 * WAD, 0, ALICE);
+        vm.stopPrank();
+    }
+
+    function testOnlyReserveCanMintOrBurnTokens() public {
+        vm.expectRevert(NaNToken.OnlyReserve.selector);
+        nan.mint(ALICE, 1);
+        vm.expectRevert(INFToken.OnlyReserve.selector);
+        inf.mint(ALICE, 1);
+        vm.expectRevert(NaNToken.OnlyReserve.selector);
+        nan.burn(ALICE, 1);
+        vm.expectRevert(INFToken.OnlyReserve.selector);
+        inf.burn(ALICE, 1);
+    }
+
+    function testInputValidation() public {
+        vm.expectRevert(NaNReserve.ZeroAmount.selector);
+        reserve.fund(0, 0, ALICE);
+        vm.expectRevert(NaNReserve.ZeroAmount.selector);
+        reserve.mint(0, 0, ALICE);
+        vm.expectRevert(NaNReserve.ZeroAmount.selector);
+        reserve.defund(0, 0, ALICE);
+        vm.expectRevert(NaNReserve.ZeroAmount.selector);
+        reserve.redeem(0, 0, ALICE);
+        vm.expectRevert(NaNReserve.ZeroAmount.selector);
+        reserve.recapitalize(0, 0, ALICE);
+
+        vm.expectRevert(NaNReserve.ZeroAddress.selector);
+        reserve.fund(1, 0, address(0));
+    }
+
+    function testFuzzSuccessfulMintNeverExceedsDebtLimit(uint96 rawCollateralIn) public {
+        _bootstrap();
+        uint256 collateralIn = bound(uint256(rawCollateralIn), 1e15, 186 * WAD);
+
+        vm.prank(BOB);
+        reserve.mint(collateralIn, 0, BOB);
+
+        assertLe(reserve.debtRatioBps(), reserve.maxDebtRatioBps());
+        assertLe(reserve.debtUsd(), reserve.reserveUsd() * 6_500 / 10_000);
+    }
+
+    function testFuzzHealthyRedemptionNeverWorsensDebtRatio(uint96 rawNanIn) public {
+        _bootstrapAndMint();
+        uint256 nanIn = bound(uint256(rawNanIn), 3_003, nan.balanceOf(BOB));
+        uint256 ratioBefore = reserve.collateralRatio();
+
+        vm.prank(BOB);
+        reserve.redeem(nanIn, 0, BOB);
+
+        if (nan.totalSupply() != 0) assertGe(reserve.collateralRatio(), ratioBefore);
     }
 }
