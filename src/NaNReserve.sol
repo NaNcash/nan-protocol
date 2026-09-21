@@ -335,11 +335,7 @@ contract NaNReserve is ReentrancyGuard {
     // Internal math
     // -------------------------------------------------------------------------
 
-    function _recapitalizationQuote(uint256 collateralIn)
-        internal
-        view
-        returns (uint256 shortfallUsd, uint256 infOut)
-    {
+    function _recapitalizationQuote(uint256 collateralIn) internal view returns (uint256 shortfallUsd, uint256 infOut) {
         uint256 price = collateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
         uint256 debt = debtUsd();
@@ -359,12 +355,9 @@ contract NaNReserve is ReentrancyGuard {
         if (infOut == 0) revert Slippage();
     }
 
-    function _replaceJuniorSeries(
-        address recipient,
-        uint256 collateralIn,
-        uint256 shortfallUsd,
-        uint256 infOut
-    ) internal {
+    function _replaceJuniorSeries(address recipient, uint256 collateralIn, uint256 shortfallUsd, uint256 infOut)
+        internal
+    {
         INFToken retiredInf = inf;
         INFToken newInf = new INFToken(address(this));
         inf = newInf;
