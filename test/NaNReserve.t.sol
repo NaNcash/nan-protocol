@@ -247,7 +247,7 @@ contract NaNReserveTest is Test {
         vm.prank(BOB);
         reserve.mint(100 * WAD, 0, BOB);
 
-        oracle.setPrice(1_498_500_000_000_000_000);
+        oracle.setPrice(1_498_500_000_000_000_000_000);
         assertEq(reserve.reserveUsd(), nan.totalSupply());
 
         uint256 collateralBefore = reserve.reserveCollateral();
