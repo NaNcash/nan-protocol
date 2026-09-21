@@ -95,6 +95,10 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         assertEq(reserve.debtUsd(), reserve.nan().totalSupply());
     }
 
+    function invariantOutstandingDebtAlwaysHasActiveJuniorCapital() public view {
+        if (reserve.debtUsd() != 0) assertGt(reserve.inf().totalSupply(), 0);
+    }
+
     function invariantHealthyStateRespectsConfiguredDebtRatio() public view {
         if (reserve.health() == NaNReserve.Health.Healthy) {
             assertLe(reserve.debtRatioBps(), reserve.maxDebtRatioBps());

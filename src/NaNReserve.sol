@@ -28,6 +28,7 @@ contract NaNReserve is ReentrancyGuard {
     error DebtRatioTooHigh();
     error NoEquity();
     error NoDebt();
+    error NoJuniorCapital();
     error Slippage();
     error UnsupportedTransferFee();
     error RecapitalizationRequired();
@@ -256,6 +257,7 @@ contract NaNReserve is ReentrancyGuard {
     {
         if (collateralIn == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
+        if (inf.totalSupply() == 0) revert NoJuniorCapital();
 
         uint256 price = collateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
@@ -297,7 +299,7 @@ contract NaNReserve is ReentrancyGuard {
         uint256 feeBps = reserveBefore > debtBefore ? redeemFeeBps : 0;
         uint256 feeUsd = Math.mulDiv(grossUsdOut, feeBps, BPS);
         uint256 netUsdOut = grossUsdOut - feeUsd;
-        collateralOut = reserveBefore < debtBefore && nanIn == debtBefore
+        collateralOut = reserveBefore <= debtBefore && nanIn == debtBefore
             ? reserveCollateral()
             : _usdToCollateral(netUsdOut, price);
 
@@ -310,9 +312,9 @@ contract NaNReserve is ReentrancyGuard {
     }
 
     /// @notice Restore an insolvent reserve and replace the wiped-out junior token with a fresh series.
-    /// @dev The deposit must exceed the entire senior shortfall. Only value above that shortfall becomes
-    ///      dollar-for-dollar INF. Retiring the old INF series prevents underwater holders from receiving
-    ///      a windfall funded by the recapitalizer.
+    /// @dev For outstanding NaN debt, the deposit must restore the configured healthy debt ratio.
+    ///      New INF represents the post-recapitalization residual equity dollar-for-dollar. Retiring the
+    ///      old INF series prevents underwater holders from receiving a windfall funded by the recapitalizer.
     function recapitalize(uint256 collateralIn, uint256 minInfOut, address recipient)
         external
         nonReentrant
@@ -321,19 +323,41 @@ contract NaNReserve is ReentrancyGuard {
         if (collateralIn == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
 
+        uint256 shortfallUsd;
+        (shortfallUsd, infOut) = _recapitalizationQuote(collateralIn);
+        if (infOut < minInfOut) revert Slippage();
+
+        _pullExact(collateralIn);
+        _replaceJuniorSeries(recipient, collateralIn, shortfallUsd, infOut);
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal math
+    // -------------------------------------------------------------------------
+
+    function _recapitalizationQuote(uint256 collateralIn) internal view returns (uint256 shortfallUsd, uint256 infOut) {
         uint256 price = collateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
         uint256 debt = debtUsd();
         if (reserveBefore > debt || (debt == 0 && inf.totalSupply() == 0)) revert NotInsolvent();
 
-        uint256 shortfallUsd = debt - reserveBefore;
+        shortfallUsd = debt - reserveBefore;
         uint256 usdIn = _collateralToUsd(collateralIn, price);
-        if (usdIn <= shortfallUsd) revert InsufficientRecapitalization();
-        infOut = usdIn - shortfallUsd;
-        if (infOut < minInfOut) revert Slippage();
+        uint256 requiredReserve;
+        if (debt != 0) {
+            requiredReserve = Math.mulDiv(debt, BPS, maxDebtRatioBps, Math.Rounding.Ceil);
+        }
 
-        _pullExact(collateralIn);
+        uint256 requiredUsdIn = requiredReserve > reserveBefore ? requiredReserve - reserveBefore : 0;
+        if (usdIn < requiredUsdIn) revert InsufficientRecapitalization();
 
+        infOut = reserveBefore + usdIn - debt;
+        if (infOut == 0) revert Slippage();
+    }
+
+    function _replaceJuniorSeries(address recipient, uint256 collateralIn, uint256 shortfallUsd, uint256 infOut)
+        internal
+    {
         INFToken retiredInf = inf;
         INFToken newInf = new INFToken(address(this));
         inf = newInf;
@@ -353,10 +377,6 @@ contract NaNReserve is ReentrancyGuard {
             juniorSeries
         );
     }
-
-    // -------------------------------------------------------------------------
-    // Internal math
-    // -------------------------------------------------------------------------
 
     function _collateralToUsd(uint256 collateralAmount, uint256 price) internal pure returns (uint256) {
         return Math.mulDiv(collateralAmount, price, WAD);

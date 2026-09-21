@@ -12,7 +12,7 @@ The implementation is feature-complete for this design, but it is **unaudited**.
 | Operation | Input | Output | Availability |
 | --- | --- | --- | --- |
 | `fund` | wstETH | INF at residual NAV | Positive junior equity |
-| `mint` | wstETH | NaN less mint fee | Resulting debt ratio is within the limit |
+| `mint` | wstETH | NaN less mint fee | Active INF exists and resulting debt ratio is within the limit |
 | `defund` | INF | wstETH at residual NAV | Resulting debt ratio is within the limit |
 | `redeem` | NaN | wstETH less redemption fee | Always; pro rata and fee-free when insolvent |
 | `recapitalize` | wstETH | New-series INF on value above the shortfall | Zero junior equity |
@@ -23,7 +23,7 @@ The contracts are ownerless, non-upgradeable, and have immutable collateral, ora
 
 - Minting and junior withdrawals cannot push debt above `maxDebtRatioBps`.
 - Insolvent NaN redemption is pro rata, so early redeemers cannot take $1 while leaving later holders with the loss.
-- An insolvency recapitalization retires the wiped-out INF series. Recapitalization capital first fills the senior shortfall; only the surplus mints the new INF series at $1.
+- An insolvency recapitalization retires the wiped-out INF series and must restore the configured healthy debt ratio. The new INF series represents the resulting residual equity at $1.
 - The oracle values stETH at the lower of 1 ETH and the stETH/ETH market feed, then applies `stEthPerToken()` and ETH/USD. Both market feeds must be fresh and valid.
 - Fee-on-transfer collateral is rejected, and only 18-decimal collateral is accepted.
 - NaN and INF use OpenZeppelin ERC-20 and ERC-2612 Permit. Reserve transfers, full-precision math, and reentrancy protection also use OpenZeppelin Contracts.
@@ -74,6 +74,7 @@ The sample defaults (65% maximum debt ratio and 10 bp mint/redemption fees) are 
 - Read `reserve.inf()` dynamically. Insolvency recapitalization changes the active INF token address and increments `juniorSeries`; retired INF has no claim on the reserve.
 - Index `Recapitalized` events so applications can retire old INF markets and discover the new series.
 - Direct wstETH transfers are donations to the reserve and do not mint claims.
+- Oracle freshness is a liveness dependency: if either configured feed becomes stale, all price-dependent operations, including redemption, halt until the feed becomes valid again. No terminal oracle-failure settlement mechanism is implemented yet.
 
 ## Scope
 
