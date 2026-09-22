@@ -84,7 +84,9 @@ wstETH/USD = stETH/USD * stEthPerToken()
 
 The primary feed must have a positive answer, a valid timestamp within the immutable staleness limit, and a complete round. A direct stETH/USD market quote captures a stETH depeg without a separate stETH/ETH call.
 
-On primary failure, only NaN redemption can call the independent fallback oracle. The fallback reports wstETH/USD with 18 decimals and must validate its own underlying data. The router applies an immutable upward premium to the fallback quote. This pays less collateral per redeemed NaN and protects the reserve from modestly low fallback valuations; it cannot make an untrustworthy fallback safe.
+On primary failure, only NaN redemption can call the immutable Uniswap v3 fallback. It computes a wstETH/WETH TWAP and a WETH/USDC TWAP over the same window, then quotes one wstETH through both pools. Pool identities are checked against the configured factory. Each pool must have the full observation history, adequate harmonic mean liquidity over the window, and adequate current liquidity. The fallback assumes USDC is worth $1. Uniswap's tick math and OpenZeppelin's full-precision multiplication and division calculate the quote.
+
+The router applies an immutable upward premium to the fallback quote. This pays less collateral per redeemed NaN and protects the reserve from modestly low fallback valuations; it cannot make manipulated TWAPs or a USDC premium safe. The two pools can lose liquidity or migrate over the protocol's lifetime, so the fallback reduces rather than eliminates permanent liveness risk.
 
 Minting, funding, defunding, and recapitalization require the primary. The reserve's ordinary health and NAV views also require the primary, while `nanRedemptionPriceUsd()` and `redemptionCollateralPriceUsd()` follow the actual redemption path. If both sources are unavailable, redemption fails closed.
 
@@ -93,7 +95,7 @@ Minting, funding, defunding, and recapitalization require the primary. The reser
 The reserve has no owner and no upgrade path. These values are fixed at deployment:
 
 - wstETH collateral address;
-- oracle address, primary feed, fallback oracle, and fallback premium;
+- oracle address, primary feed, Uniswap pool and token addresses, TWAP window, minimum pool liquidity, and fallback premium;
 - feed staleness limit;
 - maximum debt ratio;
 - mint fee;
@@ -101,7 +103,7 @@ The reserve has no owner and no upgrade path. These values are fixed at deployme
 
 This removes governance-key risk but rules out emergency intervention. Users trust the immutable code, wstETH/Lido mechanics, the configured oracle feeds, and Ethereum execution.
 
-Oracle freshness remains a liveness dependency for normal operations. NaN redemption can continue through the independent fallback when the primary fails. If both sources fail, redemption also halts. A terminal oracle-failure settlement path remains an unresolved design question rather than being hidden behind an admin key.
+Oracle freshness remains a liveness dependency for normal operations. NaN redemption can continue through the Uniswap TWAP fallback when the primary fails. If the primary and either Uniswap pool fail, redemption halts. A terminal oracle-failure settlement path remains an unresolved design question rather than being hidden behind an admin key.
 
 ## Launch requirements
 
