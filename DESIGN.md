@@ -76,22 +76,24 @@ If the last insolvent NaN redemption exhausts both debt and collateral, `recapit
 
 ## Oracle
 
-The oracle uses three inputs:
+The immutable router uses a direct Chainlink stETH/USD feed in normal operation:
 
 ```text
-effective stETH/ETH = min(1, market stETH/ETH)
-wstETH/ETH = stEthPerToken() * effective stETH/ETH
-wstETH/USD = wstETH/ETH * ETH/USD
+wstETH/USD = stETH/USD * stEthPerToken()
 ```
 
-The ETH/USD and stETH/ETH feeds are Chainlink-compatible and independently checked for positive answers, timestamps, staleness, and round completion. Capping stETH at 1 ETH prevents a market premium from inflating collateral value; using the market rate below 1 ETH protects the reserve during a depeg. A production deployment must validate feed liquidity, heartbeat, deviation thresholds, and network-specific failure modes.
+The primary feed must have a positive answer, a valid timestamp within the immutable staleness limit, and a complete round. A direct stETH/USD market quote captures a stETH depeg without a separate stETH/ETH call.
+
+On primary failure, only NaN redemption can call the independent fallback oracle. The fallback reports wstETH/USD with 18 decimals and must validate its own underlying data. The router applies an immutable upward premium to the fallback quote. This pays less collateral per redeemed NaN and protects the reserve from modestly low fallback valuations; it cannot make an untrustworthy fallback safe.
+
+Minting, funding, defunding, and recapitalization require the primary. The reserve's ordinary health and NAV views also require the primary, while `nanRedemptionPriceUsd()` and `redemptionCollateralPriceUsd()` follow the actual redemption path. If both sources are unavailable, redemption fails closed.
 
 ## Immutability and trust model
 
 The reserve has no owner and no upgrade path. These values are fixed at deployment:
 
 - wstETH collateral address;
-- oracle address and its feed addresses;
+- oracle address, primary feed, fallback oracle, and fallback premium;
 - feed staleness limit;
 - maximum debt ratio;
 - mint fee;
@@ -99,7 +101,7 @@ The reserve has no owner and no upgrade path. These values are fixed at deployme
 
 This removes governance-key risk but rules out emergency intervention. Users trust the immutable code, wstETH/Lido mechanics, the configured oracle feeds, and Ethereum execution.
 
-Oracle freshness is also a liveness dependency. If either configured feed becomes stale or invalid, every price-dependent operation, including NaN redemption, halts until valid oracle data resumes. A terminal oracle-failure settlement path remains an unresolved design question rather than being hidden behind an admin key.
+Oracle freshness remains a liveness dependency for normal operations. NaN redemption can continue through the independent fallback when the primary fails. If both sources fail, redemption also halts. A terminal oracle-failure settlement path remains an unresolved design question rather than being hidden behind an admin key.
 
 ## Launch requirements
 
