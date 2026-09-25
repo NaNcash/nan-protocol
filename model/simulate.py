@@ -54,11 +54,11 @@ show("after 25% drawdown", s)
 s.reserve *= 0.75
 show("after second -25%", s)
 
-# A recapitalizer restores the configured 65% maximum debt ratio. The old INF
+# A recapitalizer restores the configured 55% target debt ratio. The old INF
 # series is retired and the post-recapitalization residual equity becomes new
 # INF at $1.
-max_debt_ratio = 0.65
-required_reserve = s.nan / max_debt_ratio
+target_debt_ratio = 0.55
+required_reserve = s.nan / target_debt_ratio
 recap_in = required_reserve - s.reserve
 s.reserve += recap_in
 s.inf = s.reserve - s.nan

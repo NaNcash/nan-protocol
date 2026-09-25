@@ -24,6 +24,9 @@ contract Deploy is Script {
         uint128 minWethUsdcLiquidity;
         uint256 maxStaleness;
         uint256 fallbackPremiumBps;
+        address authorizer;
+        uint256 minDebtRatioBps;
+        uint256 targetDebtRatioBps;
         uint256 maxDebtRatioBps;
         uint256 mintFeeBps;
         uint256 redeemFeeBps;
@@ -42,7 +45,14 @@ contract Deploy is Script {
             config.fallbackPremiumBps
         );
         reserve = new NaNReserve(
-            IERC20(config.wstETH), oracle, config.maxDebtRatioBps, config.mintFeeBps, config.redeemFeeBps
+            IERC20(config.wstETH),
+            oracle,
+            config.authorizer,
+            config.minDebtRatioBps,
+            config.targetDebtRatioBps,
+            config.maxDebtRatioBps,
+            config.mintFeeBps,
+            config.redeemFeeBps
         );
         vm.stopBroadcast();
 
@@ -52,6 +62,7 @@ contract Deploy is Script {
         console2.log("NaNReserve", address(reserve));
         console2.log("NaNToken", address(reserve.nan()));
         console2.log("INFToken series 1", address(reserve.inf()));
+        console2.log("Authorizer", config.authorizer);
     }
 
     function _readConfig() internal view returns (Config memory config) {
@@ -68,6 +79,9 @@ contract Deploy is Script {
         config.minWethUsdcLiquidity = SafeCast.toUint128(vm.envUint("MIN_WETH_USDC_HARMONIC_LIQUIDITY"));
         config.maxStaleness = vm.envOr("MAX_STALENESS", uint256(1 hours));
         config.fallbackPremiumBps = vm.envOr("FALLBACK_PREMIUM_BPS", uint256(200));
+        config.authorizer = vm.envAddress("AUTHORIZER");
+        config.minDebtRatioBps = vm.envOr("MIN_DEBT_RATIO_BPS", uint256(3_000));
+        config.targetDebtRatioBps = vm.envOr("TARGET_DEBT_RATIO_BPS", uint256(5_500));
         config.maxDebtRatioBps = vm.envOr("MAX_DEBT_RATIO_BPS", uint256(6_500));
         config.mintFeeBps = vm.envOr("MINT_FEE_BPS", uint256(10));
         config.redeemFeeBps = vm.envOr("REDEEM_FEE_BPS", uint256(10));
