@@ -6,7 +6,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
+import {IReserveOracle} from "./interfaces/IReserveOracle.sol";
 import {NaNToken} from "./NaNToken.sol";
 import {INFToken} from "./INFToken.sol";
 
@@ -43,7 +43,7 @@ contract NaNReserve is ReentrancyGuard {
     }
 
     IERC20 public immutable collateral;
-    IPriceOracle public immutable oracle;
+    IReserveOracle public immutable oracle;
     NaNToken public immutable nan;
     /// @notice Active junior token. A recapitalization retires the old series and replaces this address.
     INFToken public inf;
@@ -75,7 +75,7 @@ contract NaNReserve is ReentrancyGuard {
 
     constructor(
         IERC20 collateral_,
-        IPriceOracle oracle_,
+        IReserveOracle oracle_,
         uint256 maxDebtRatioBps_,
         uint256 mintFeeBps_,
         uint256 redeemFeeBps_
@@ -106,6 +106,12 @@ contract NaNReserve is ReentrancyGuard {
         uint256 price = oracle.price();
         if (price == 0) revert InvalidPrice();
         return price;
+    }
+
+    /// @notice Redemption can use the immutable fallback when the primary oracle is unavailable.
+    function redemptionCollateralPriceUsd() public view returns (uint256 price, bool fallbackUsed) {
+        (price, fallbackUsed) = oracle.redemptionPrice();
+        if (price == 0) revert InvalidPrice();
     }
 
     function reserveCollateral() public view returns (uint256) {
@@ -165,7 +171,8 @@ contract NaNReserve is ReentrancyGuard {
     function nanRedemptionPriceUsd() public view returns (uint256) {
         uint256 debt = debtUsd();
         if (debt == 0) return WAD;
-        uint256 reserve = reserveUsd();
+        (uint256 collateralPrice,) = redemptionCollateralPriceUsd();
+        uint256 reserve = _collateralToUsd(reserveCollateral(), collateralPrice);
         if (reserve >= debt) return WAD;
         return Math.mulDiv(reserve, WAD, debt);
     }
@@ -288,10 +295,10 @@ contract NaNReserve is ReentrancyGuard {
         if (nanIn == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
 
-        uint256 price = collateralPriceUsd();
-        uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
         uint256 debtBefore = debtUsd();
         if (debtBefore == 0) revert NoDebt();
+        (uint256 price,) = redemptionCollateralPriceUsd();
+        uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
 
         uint256 redemptionPrice = reserveBefore >= debtBefore ? WAD : Math.mulDiv(reserveBefore, WAD, debtBefore);
         uint256 grossUsdOut = Math.mulDiv(nanIn, redemptionPrice, WAD);

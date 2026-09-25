@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-import {IPriceOracle} from "../../src/interfaces/IPriceOracle.sol";
+import {IReserveOracle} from "../../src/interfaces/IReserveOracle.sol";
 
-contract MockOracle is IPriceOracle {
+contract MockOracle is IReserveOracle {
     uint256 public priceValue;
 
     constructor(uint256 price_) {
@@ -16,5 +16,9 @@ contract MockOracle is IPriceOracle {
 
     function price() external view returns (uint256) {
         return priceValue;
+    }
+
+    function redemptionPrice() external view returns (uint256, bool) {
+        return (priceValue, false);
     }
 }

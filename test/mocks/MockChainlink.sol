@@ -14,7 +14,10 @@ contract MockWstETH {
 }
 
 contract MockAggregator {
+    error FeedUnavailable();
+
     uint8 public immutable decimals;
+    bool public unavailable;
     uint80 public roundId;
     int256 public answer;
     uint256 public startedAt;
@@ -34,7 +37,12 @@ contract MockAggregator {
         answeredInRound = answeredInRound_;
     }
 
+    function setUnavailable(bool unavailable_) external {
+        unavailable = unavailable_;
+    }
+
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
+        if (unavailable) revert FeedUnavailable();
         return (roundId, answer, startedAt, updatedAt, answeredInRound);
     }
 }
