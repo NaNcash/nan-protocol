@@ -23,7 +23,7 @@ contract NaNReserveTest is Test {
     function setUp() public {
         wstETH = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
-        reserve = new NaNReserve(wstETH, oracle, 6_500, 10, 10);
+        reserve = new NaNReserve(wstETH, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
         nan = reserve.nan();
         inf = reserve.inf();
 
@@ -34,6 +34,10 @@ contract NaNReserveTest is Test {
         wstETH.approve(address(reserve), type(uint256).max);
         vm.prank(BOB);
         wstETH.approve(address(reserve), type(uint256).max);
+        vm.prank(ALICE);
+        inf.approve(address(reserve), type(uint256).max);
+        vm.prank(BOB);
+        inf.approve(address(reserve), type(uint256).max);
     }
 
     function _bootstrap() internal {
@@ -45,6 +49,13 @@ contract NaNReserveTest is Test {
         _bootstrap();
         vm.prank(BOB);
         reserve.mint(180 * WAD, 0, BOB);
+    }
+
+    function _requestAndSettle(uint256 amount) internal returns (uint256 series, uint256 epoch) {
+        vm.prank(ALICE);
+        (series, epoch) = reserve.requestDefund(amount);
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        reserve.settleDefundEpoch(series, epoch);
     }
 
     function testDeploymentCreatesPermitTokensAndFirstJuniorSeries() public view {
@@ -60,18 +71,18 @@ contract NaNReserveTest is Test {
     function testConstructorRejectsNon18DecimalCollateral() public {
         MockERC20Decimals usdc = new MockERC20Decimals("USD Coin", "USDC", 6);
         vm.expectRevert(NaNReserve.UnsupportedCollateralDecimals.selector);
-        new NaNReserve(usdc, oracle, 6_500, 10, 10);
+        new NaNReserve(usdc, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
     }
 
     function testConstructorRejectsInvalidParameters() public {
         vm.expectRevert(NaNReserve.ZeroAddress.selector);
-        new NaNReserve(MockERC20(address(0)), oracle, 6_500, 10, 10);
+        new NaNReserve(MockERC20(address(0)), oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
 
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        new NaNReserve(wstETH, oracle, 10_000, 10, 10);
+        new NaNReserve(wstETH, oracle, address(this), 5_000, 6_450, 10_000, 10, 10);
 
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        new NaNReserve(wstETH, oracle, 6_500, 10_000, 10);
+        new NaNReserve(wstETH, oracle, address(this), 5_000, 6_450, 6_500, 10_000, 10);
     }
 
     function testInitialFundingStartsInfAtOneDollar() public {
@@ -121,7 +132,7 @@ contract NaNReserveTest is Test {
 
     function testMintRequiresActiveJuniorCapitalEvenAfterDonation() public {
         vm.prank(ALICE);
-        wstETH.transfer(address(reserve), 100 * WAD);
+        assertTrue(wstETH.transfer(address(reserve), 100 * WAD));
 
         vm.prank(BOB);
         vm.expectRevert(NaNReserve.NoJuniorCapital.selector);
@@ -158,21 +169,24 @@ contract NaNReserveTest is Test {
 
     function testDefundCannotBreakCollateralLimit() public {
         _bootstrapAndMint();
-
+        (uint256 series, uint256 epoch) = _requestAndSettle(20_000 * WAD);
+        (,, uint256 filledInf, uint256 collateralOut,,) = reserve.withdrawalEpochs(series, epoch);
+        assertGt(filledInf, 0);
+        assertLt(filledInf, 20_000 * WAD);
+        assertGt(collateralOut, 0);
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.DebtRatioTooHigh.selector);
-        reserve.defund(20_000 * WAD, 0, ALICE);
-
-        vm.prank(ALICE);
-        reserve.defund(5_000 * WAD, 0, ALICE);
+        (uint256 claimed, uint256 refunded) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertEq(claimed, collateralOut);
+        assertEq(refunded, 20_000 * WAD - filledInf);
         assertLe(reserve.debtRatioBps(), 6_500);
     }
 
     function testAllInfCanDefundWhenThereIsNoDebt() public {
         _bootstrap();
         uint256 infSupply = inf.totalSupply();
+        (uint256 series, uint256 epoch) = _requestAndSettle(infSupply);
         vm.prank(ALICE);
-        uint256 collateralOut = reserve.defund(infSupply, 100 * WAD, ALICE);
+        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 100 * WAD, ALICE);
         assertEq(collateralOut, 100 * WAD);
         assertEq(inf.totalSupply(), 0);
         assertEq(reserve.reserveCollateral(), 0);
@@ -182,9 +196,10 @@ contract NaNReserveTest is Test {
         _bootstrap();
         oracle.setPrice(3_333 * WAD + 17);
         uint256 infSupply = inf.totalSupply();
+        (uint256 series, uint256 epoch) = _requestAndSettle(infSupply);
 
         vm.prank(ALICE);
-        uint256 collateralOut = reserve.defund(infSupply, 100 * WAD, ALICE);
+        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 100 * WAD, ALICE);
 
         assertEq(collateralOut, 100 * WAD);
         assertEq(reserve.reserveCollateral(), 0);
@@ -197,9 +212,11 @@ contract NaNReserveTest is Test {
 
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
+        (uint256 series, uint256 epoch) = _requestAndSettle(1);
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.NoEquity.selector);
-        reserve.defund(1, 0, ALICE);
+        (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertEq(collateralOut, 0);
+        assertEq(refundedInf, 1);
     }
 
     function testHealthyRedemptionLeavesFeeForInfAndImprovesHealth() public {
@@ -299,18 +316,18 @@ contract NaNReserveTest is Test {
         assertEq(reserve.equityUsd(), 0);
 
         vm.prank(ALICE);
-        uint256 infOut = reserve.recapitalize(274 * WAD, 291_540 * WAD, ALICE);
+        uint256 infOut = reserve.recapitalize(278 * WAD, 297_540 * WAD, ALICE);
 
         INFToken newInf = reserve.inf();
         assertNotEq(address(newInf), address(retiredInf));
         assertEq(reserve.juniorSeries(), 2);
-        assertEq(infOut, 291_540 * WAD);
+        assertEq(infOut, 297_540 * WAD);
         assertEq(newInf.balanceOf(ALICE), infOut);
         assertEq(newInf.totalSupply(), infOut);
         assertEq(retiredInf.balanceOf(ALICE), 300_000 * WAD);
         assertEq(reserve.infPriceUsd(), WAD);
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Healthy));
-        assertLe(reserve.debtRatioBps(), reserve.maxDebtRatioBps());
+        assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
     }
 
     function testRecapitalizationMustRestoreHealthyRatio() public {
@@ -319,7 +336,7 @@ contract NaNReserveTest is Test {
 
         vm.prank(ALICE);
         vm.expectRevert(NaNReserve.InsufficientRecapitalization.selector);
-        reserve.recapitalize(273 * WAD, 0, ALICE);
+        reserve.recapitalize(277 * WAD, 0, ALICE);
     }
 
     function testRecapitalizationSlippageProtection() public {
@@ -328,7 +345,7 @@ contract NaNReserveTest is Test {
 
         vm.prank(ALICE);
         vm.expectRevert(NaNReserve.Slippage.selector);
-        reserve.recapitalize(274 * WAD, 291_540 * WAD + 1, ALICE);
+        reserve.recapitalize(278 * WAD, 297_540 * WAD + 1, ALICE);
     }
 
     function testRecapitalizationOnlyDuringInsolvency() public {
@@ -343,14 +360,17 @@ contract NaNReserveTest is Test {
         oracle.setPrice(1_500 * WAD);
         INFToken retiredInf = reserve.inf();
         vm.prank(ALICE);
-        reserve.recapitalize(274 * WAD, 0, BOB);
+        reserve.recapitalize(278 * WAD, 0, BOB);
 
         vm.prank(BOB);
-        reserve.fund(500 * WAD, 0, BOB);
+        reserve.fund(100 * WAD, 0, BOB);
 
+        INFToken activeInf = reserve.inf();
+        vm.prank(ALICE);
+        activeInf.approve(address(reserve), type(uint256).max);
         vm.prank(ALICE);
         vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, ALICE, 0, 1 * WAD));
-        reserve.defund(1 * WAD, 0, ALICE);
+        reserve.requestDefund(1 * WAD);
 
         assertEq(retiredInf.balanceOf(ALICE), 300_000 * WAD);
     }
@@ -363,7 +383,7 @@ contract NaNReserveTest is Test {
 
     function testRejectsFeeOnTransferCollateral() public {
         MockFeeOnTransferERC20 feeToken = new MockFeeOnTransferERC20();
-        NaNReserve feeReserve = new NaNReserve(feeToken, oracle, 6_500, 10, 10);
+        NaNReserve feeReserve = new NaNReserve(feeToken, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
         feeToken.mint(ALICE, 100 * WAD);
         vm.startPrank(ALICE);
         feeToken.approve(address(feeReserve), type(uint256).max);
@@ -389,7 +409,7 @@ contract NaNReserveTest is Test {
         vm.expectRevert(NaNReserve.ZeroAmount.selector);
         reserve.mint(0, 0, ALICE);
         vm.expectRevert(NaNReserve.ZeroAmount.selector);
-        reserve.defund(0, 0, ALICE);
+        reserve.requestDefund(0);
         vm.expectRevert(NaNReserve.ZeroAmount.selector);
         reserve.redeem(0, 0, ALICE);
         vm.expectRevert(NaNReserve.ZeroAmount.selector);

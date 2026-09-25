@@ -7,6 +7,7 @@ import {WstEthUsdOracle, IWstETH, IAggregatorV3} from "../src/WstEthUsdOracle.so
 import {MockWstETH, MockAggregator} from "./mocks/MockChainlink.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockOracle} from "./mocks/MockOracle.sol";
+import {INFToken} from "../src/INFToken.sol";
 
 contract OracleFallbackTest is Test {
     uint256 internal constant WAD = 1e18;
@@ -29,7 +30,7 @@ contract OracleFallbackTest is Test {
         oracle = new WstEthUsdOracle(
             IWstETH(address(accountingRate)), IAggregatorV3(address(primaryFeed)), fallbackOracle, 1 hours, 200
         );
-        reserve = new NaNReserve(collateral, oracle, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
 
         collateral.mint(ALICE, 200 * WAD);
         collateral.mint(BOB, 200 * WAD);
@@ -61,7 +62,30 @@ contract OracleFallbackTest is Test {
         assertEq(collateralOut, 10_000 * WAD * 9_990 / 10_000 / 3_162);
     }
 
+    function testAuthorizerCanReplaceRetiredPrimaryFeedWithNewRouter() public {
+        primaryFeed.setUnavailable(true);
+        vm.expectRevert();
+        reserve.collateralPriceUsd();
+
+        MockAggregator replacementFeed = new MockAggregator(8, 3_200e8, block.timestamp);
+        WstEthUsdOracle replacementRouter = new WstEthUsdOracle(
+            IWstETH(address(new MockWstETH(WAD))), IAggregatorV3(address(replacementFeed)), fallbackOracle, 1 hours, 200
+        );
+        reserve.setOracle(replacementRouter);
+
+        assertEq(reserve.collateralPriceUsd(), 3_200 * WAD);
+        (uint256 redemptionPrice, bool fallbackUsed) = reserve.redemptionCollateralPriceUsd();
+        assertEq(redemptionPrice, 3_200 * WAD);
+        assertFalse(fallbackUsed);
+    }
+
     function testStalePrimaryHaltsRiskAndJuniorActions() public {
+        INFToken inf = reserve.inf();
+        vm.prank(ALICE);
+        inf.approve(address(reserve), 1 * WAD);
+        vm.prank(ALICE);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(1 * WAD);
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
         primaryFeed.setUnavailable(true);
 
         vm.prank(BOB);
@@ -72,9 +96,8 @@ contract OracleFallbackTest is Test {
         vm.expectRevert(MockAggregator.FeedUnavailable.selector);
         reserve.fund(1 * WAD, 0, ALICE);
 
-        vm.prank(ALICE);
         vm.expectRevert(MockAggregator.FeedUnavailable.selector);
-        reserve.defund(1 * WAD, 0, ALICE);
+        reserve.settleDefundEpoch(series, epoch);
 
         vm.prank(ALICE);
         vm.expectRevert(MockAggregator.FeedUnavailable.selector);

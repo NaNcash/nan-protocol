@@ -5,7 +5,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IReserveOracle} from "./interfaces/IReserveOracle.sol";
 import {NaNToken} from "./NaNToken.sol";
 import {INFToken} from "./INFToken.sol";
@@ -13,12 +16,17 @@ import {INFToken} from "./INFToken.sol";
 /// @title NaN Reserve
 /// @notice Minimal pooled-reserve stablecoin inspired by the senior/junior economics of USM/FUM.
 /// @dev NaN is the senior $1 claim. INF owns the residual reserve value and absorbs losses first.
-///      The contract is intentionally ownerless and non-upgradeable.
-contract NaNReserve is ReentrancyGuard {
+///      The reserve is non-upgradeable; its authorizer can change bounded risk parameters and the oracle router.
+contract NaNReserve is ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
+    uint256 public constant MAX_FEE_BPS = 1_000;
+    uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
+    uint256 public constant MAX_INF_WITHDRAWAL_DELAY = 30 days;
+    uint256 public constant INF_WITHDRAWAL_EPOCH = 1 days;
+    uint256 public constant INF_SETTLEMENT_WINDOW = 1 days;
 
     error ZeroAmount();
     error ZeroAddress();
@@ -26,7 +34,7 @@ contract NaNReserve is ReentrancyGuard {
     error InvalidPrice();
     error UnsupportedCollateralDecimals();
     error DebtRatioTooHigh();
-    error NoEquity();
+    error DebtRatioTooLow();
     error NoDebt();
     error NoJuniorCapital();
     error Slippage();
@@ -34,6 +42,14 @@ contract NaNReserve is ReentrancyGuard {
     error RecapitalizationRequired();
     error NotInsolvent();
     error InsufficientRecapitalization();
+    error WithdrawalNotReady();
+    error WithdrawalWindowClosed();
+    error WithdrawalNotExpired();
+    error WithdrawalAlreadySettled();
+    error WithdrawalNotSettled();
+    error NoWithdrawalRequest();
+    error WithdrawalRequestExists();
+    error RenounceDisabled();
 
     enum Health {
         NoDebt,
@@ -43,19 +59,56 @@ contract NaNReserve is ReentrancyGuard {
     }
 
     IERC20 public immutable collateral;
-    IReserveOracle public immutable oracle;
+    IReserveOracle public oracle;
     NaNToken public immutable nan;
     /// @notice Active junior token. A recapitalization retires the old series and replaces this address.
     INFToken public inf;
     uint256 public juniorSeries;
 
-    /// @notice Maximum debt / reserve value during normal operation, in basis points.
-    uint256 public immutable maxDebtRatioBps;
-    uint256 public immutable mintFeeBps;
-    uint256 public immutable redeemFeeBps;
+    /// @notice Debt / reserve bounds in basis points, ordered min < target < max.
+    uint256 public minDebtRatioBps;
+    uint256 public targetDebtRatioBps;
+    uint256 public maxDebtRatioBps;
+    uint256 public mintFeeBps;
+    uint256 public redeemFeeBps;
+    /// @notice Delay for newly opened daily INF withdrawal cohorts; existing cohorts keep their maturity.
+    uint256 public infWithdrawalDelay = 3 days;
+
+    struct WithdrawalEpoch {
+        INFToken token;
+        uint256 requestedInf;
+        uint256 filledInf;
+        uint256 collateralOut;
+        bool settled;
+        uint64 maturity;
+    }
+
+    struct WithdrawalRequest {
+        uint256 start;
+        uint256 infAmount;
+    }
+
+    /// @notice Withdrawal epochs are scoped to an INF series so recapitalization cannot revive retired claims.
+    mapping(uint256 series => mapping(uint256 epoch => WithdrawalEpoch)) public withdrawalEpochs;
+    mapping(uint256 series => mapping(uint256 epoch => mapping(address account => WithdrawalRequest))) public
+        withdrawalRequests;
+    /// @notice Settled withdrawal collateral is excluded from reserve backing until users claim it.
+    uint256 public claimableWithdrawalCollateral;
 
     event Funded(address indexed caller, address indexed recipient, uint256 collateralIn, uint256 infOut);
     event Defunded(address indexed caller, address indexed recipient, uint256 infIn, uint256 collateralOut);
+    event WithdrawalRequested(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infIn);
+    event WithdrawalSettled(uint256 indexed series, uint256 indexed epoch, uint256 filledInf, uint256 collateralOut);
+    event WithdrawalExpired(uint256 indexed series, uint256 indexed epoch);
+    event WithdrawalClaimed(
+        address indexed account,
+        address indexed recipient,
+        uint256 indexed series,
+        uint256 epoch,
+        uint256 filledInf,
+        uint256 collateralOut,
+        uint256 refundedInf
+    );
     event Minted(
         address indexed caller, address indexed recipient, uint256 collateralIn, uint256 nanOut, uint256 feeUsd
     );
@@ -72,30 +125,90 @@ contract NaNReserve is ReentrancyGuard {
         uint256 infOut,
         uint256 juniorSeries
     );
+    event OracleUpdated(address indexed previousOracle, address indexed newOracle);
+    event DebtRatiosUpdated(uint256 minDebtRatioBps, uint256 targetDebtRatioBps, uint256 maxDebtRatioBps);
+    event FeesUpdated(uint256 mintFeeBps, uint256 redeemFeeBps);
+    event InfWithdrawalDelayUpdated(uint256 previousDelay, uint256 newDelay);
 
     constructor(
         IERC20 collateral_,
         IReserveOracle oracle_,
+        address authorizer_,
+        uint256 minDebtRatioBps_,
+        uint256 targetDebtRatioBps_,
         uint256 maxDebtRatioBps_,
         uint256 mintFeeBps_,
         uint256 redeemFeeBps_
-    ) {
+    ) Ownable(authorizer_) {
         if (address(collateral_) == address(0) || address(oracle_) == address(0)) {
             revert ZeroAddress();
         }
-        if (maxDebtRatioBps_ == 0 || maxDebtRatioBps_ >= BPS) revert InvalidConfiguration();
-        if (mintFeeBps_ >= BPS || redeemFeeBps_ >= BPS) revert InvalidConfiguration();
         if (IERC20Metadata(address(collateral_)).decimals() != 18) revert UnsupportedCollateralDecimals();
 
         collateral = collateral_;
-        oracle = oracle_;
-        maxDebtRatioBps = maxDebtRatioBps_;
-        mintFeeBps = mintFeeBps_;
-        redeemFeeBps = redeemFeeBps_;
+        _setOracle(oracle_);
+        _setDebtRatios(minDebtRatioBps_, targetDebtRatioBps_, maxDebtRatioBps_);
+        _setFees(mintFeeBps_, redeemFeeBps_);
 
         nan = new NaNToken(address(this));
         inf = new INFToken(address(this));
         juniorSeries = 1;
+    }
+
+    /// @notice Rotate the full oracle router, including primary feed and fallback configuration.
+    function setOracle(IReserveOracle newOracle) external onlyOwner {
+        _setOracle(newOracle);
+    }
+
+    function setDebtRatios(uint256 minBps, uint256 targetBps, uint256 maxBps) external onlyOwner {
+        _setDebtRatios(minBps, targetBps, maxBps);
+    }
+
+    function setFees(uint256 mintBps, uint256 redeemBps) external onlyOwner {
+        _setFees(mintBps, redeemBps);
+    }
+
+    /// @notice Change the delay for future cohorts only; requests already in a cohort are unaffected.
+    function setInfWithdrawalDelay(uint256 newDelay) external onlyOwner {
+        if (newDelay < MIN_INF_WITHDRAWAL_DELAY || newDelay > MAX_INF_WITHDRAWAL_DELAY) {
+            revert InvalidConfiguration();
+        }
+        uint256 previousDelay = infWithdrawalDelay;
+        infWithdrawalDelay = newDelay;
+        emit InfWithdrawalDelayUpdated(previousDelay, newDelay);
+    }
+
+    /// @notice Configuration must always have an authorizer able to rotate failed dependencies.
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
+    }
+
+    function _setOracle(IReserveOracle newOracle) internal {
+        if (address(newOracle) == address(0)) revert ZeroAddress();
+        if (address(newOracle).code.length == 0) revert InvalidConfiguration();
+        if (newOracle.price() == 0) revert InvalidPrice();
+        (uint256 redemptionPrice,) = newOracle.redemptionPrice();
+        if (redemptionPrice == 0) revert InvalidPrice();
+        address previous = address(oracle);
+        oracle = newOracle;
+        emit OracleUpdated(previous, address(newOracle));
+    }
+
+    function _setDebtRatios(uint256 minBps, uint256 targetBps, uint256 maxBps) internal {
+        if (minBps == 0 || minBps >= targetBps || targetBps >= maxBps || maxBps >= BPS) {
+            revert InvalidConfiguration();
+        }
+        minDebtRatioBps = minBps;
+        targetDebtRatioBps = targetBps;
+        maxDebtRatioBps = maxBps;
+        emit DebtRatiosUpdated(minBps, targetBps, maxBps);
+    }
+
+    function _setFees(uint256 mintBps, uint256 redeemBps) internal {
+        if (mintBps > MAX_FEE_BPS || redeemBps > MAX_FEE_BPS) revert InvalidConfiguration();
+        mintFeeBps = mintBps;
+        redeemFeeBps = redeemBps;
+        emit FeesUpdated(mintBps, redeemBps);
     }
 
     // -------------------------------------------------------------------------
@@ -108,14 +221,25 @@ contract NaNReserve is ReentrancyGuard {
         return price;
     }
 
-    /// @notice Redemption can use the immutable fallback when the primary oracle is unavailable.
+    /// @notice Redemption can use the configured fallback when the primary oracle is unavailable.
     function redemptionCollateralPriceUsd() public view returns (uint256 price, bool fallbackUsed) {
         (price, fallbackUsed) = oracle.redemptionPrice();
         if (price == 0) revert InvalidPrice();
     }
 
     function reserveCollateral() public view returns (uint256) {
-        return collateral.balanceOf(address(this));
+        return collateral.balanceOf(address(this)) - claimableWithdrawalCollateral;
+    }
+
+    /// @notice The fixed maturity of an opened series-specific withdrawal cohort.
+    function withdrawalMaturity(uint256 series, uint256 epoch) public view returns (uint256) {
+        WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
+        if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
+        return requestEpoch.maturity;
+    }
+
+    function withdrawalExpiry(uint256 series, uint256 epoch) public view returns (uint256) {
+        return withdrawalMaturity(series, epoch) + INF_SETTLEMENT_WINDOW;
     }
 
     function reserveUsd() public view returns (uint256) {
@@ -177,15 +301,25 @@ contract NaNReserve is ReentrancyGuard {
         return Math.mulDiv(reserve, WAD, debt);
     }
 
-    /// @notice Maximum USD of residual reserve that INF holders may currently remove while preserving the max debt ratio.
+    /// @notice Maximum USD of residual reserve that INF holders may remove while preserving the target ratio.
     function maxDefundableUsd() public view returns (uint256) {
         uint256 reserve = reserveUsd();
         uint256 debt = debtUsd();
         if (debt == 0) return reserve;
 
-        uint256 minReserve = Math.mulDiv(debt, BPS, maxDebtRatioBps, Math.Rounding.Ceil);
+        uint256 minReserve = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
         if (reserve <= minReserve) return 0;
         return reserve - minReserve;
+    }
+
+    /// @notice Approximate additional USD of INF funding allowed before reaching the minimum debt ratio.
+    /// @dev With no debt, initial junior funding is uncapped.
+    function maxFundableUsd() public view returns (uint256) {
+        uint256 debt = debtUsd();
+        if (debt == 0) return type(uint256).max;
+        uint256 reserve = reserveUsd();
+        uint256 maxReserve = Math.mulDiv(debt, BPS, minDebtRatioBps);
+        return reserve >= maxReserve ? 0 : maxReserve - reserve;
     }
 
     // -------------------------------------------------------------------------
@@ -207,6 +341,12 @@ contract NaNReserve is ReentrancyGuard {
         uint256 debt = debtUsd();
         uint256 infSupply = inf.totalSupply();
         uint256 usdIn = _collateralToUsd(collateralIn, price);
+        if (
+            debt != 0
+                && _collateralToUsd(reserveCollateral() + collateralIn, price) > Math.mulDiv(debt, BPS, minDebtRatioBps)
+        ) {
+            revert DebtRatioTooLow();
+        }
 
         if (infSupply == 0) {
             if (debt != 0) revert RecapitalizationRequired();
@@ -224,35 +364,96 @@ contract NaNReserve is ReentrancyGuard {
         emit Funded(msg.sender, recipient, collateralIn, infOut);
     }
 
-    /// @notice Redeem INF for its proportional residual reserve value.
-    /// @dev Reverts if the withdrawal would push debt/reserve above maxDebtRatioBps.
-    function defund(uint256 infIn, uint256 minCollateralOut, address recipient)
+    /// @notice Lock active INF for a withdrawal. No collateral amount is fixed at request time.
+    /// @dev Requests in the same daily cohort share the delay snapshotted when it first opens.
+    function requestDefund(uint256 infIn) external nonReentrant returns (uint256 series, uint256 epoch) {
+        if (infIn == 0) revert ZeroAmount();
+        series = juniorSeries;
+        epoch = block.timestamp / INF_WITHDRAWAL_EPOCH;
+        WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
+        WithdrawalRequest storage request = withdrawalRequests[series][epoch][msg.sender];
+        if (request.infAmount != 0) revert WithdrawalRequestExists();
+        if (address(requestEpoch.token) == address(0)) {
+            requestEpoch.token = inf;
+            requestEpoch.maturity = SafeCast.toUint64((epoch + 1) * INF_WITHDRAWAL_EPOCH + infWithdrawalDelay);
+        }
+
+        IERC20(address(inf)).safeTransferFrom(msg.sender, address(this), infIn);
+        request.start = requestEpoch.requestedInf;
+        request.infAmount = infIn;
+        requestEpoch.requestedInf += infIn;
+
+        emit WithdrawalRequested(msg.sender, series, epoch, infIn);
+    }
+
+    /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
+    /// @dev A cohort can be partially filled, with the unfilled INF returned during claim.
+    function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
+        WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
+        if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
+        if (requestEpoch.settled) revert WithdrawalAlreadySettled();
+        if (block.timestamp < requestEpoch.maturity) revert WithdrawalNotReady();
+        if (block.timestamp >= uint256(requestEpoch.maturity) + INF_SETTLEMENT_WINDOW) {
+            revert WithdrawalWindowClosed();
+        }
+
+        uint256 filledInf;
+        uint256 collateralOut;
+        if (address(requestEpoch.token) == address(inf)) {
+            (filledInf, collateralOut) = _withdrawalQuote(requestEpoch.requestedInf);
+        }
+
+        requestEpoch.settled = true;
+        requestEpoch.filledInf = filledInf;
+        requestEpoch.collateralOut = collateralOut;
+        if (filledInf != 0) requestEpoch.token.burn(address(this), filledInf);
+        claimableWithdrawalCollateral += collateralOut;
+
+        emit WithdrawalSettled(series, epoch, filledInf, collateralOut);
+    }
+
+    /// @notice Release requests if their one-day settlement window passed without a valid settlement.
+    function expireDefundEpoch(uint256 series, uint256 epoch) external {
+        WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
+        if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
+        if (requestEpoch.settled) revert WithdrawalAlreadySettled();
+        if (block.timestamp < uint256(requestEpoch.maturity) + INF_SETTLEMENT_WINDOW) revert WithdrawalNotExpired();
+
+        requestEpoch.settled = true;
+        emit WithdrawalExpired(series, epoch);
+    }
+
+    /// @notice Claim fixed collateral and any INF not filled by the settled epoch.
+    function claimDefund(uint256 series, uint256 epoch, uint256 minCollateralOut, address recipient)
         external
         nonReentrant
-        returns (uint256 collateralOut)
+        returns (uint256 collateralOut, uint256 refundedInf)
     {
-        if (infIn == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
+        WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
+        if (!requestEpoch.settled) revert WithdrawalNotSettled();
+        WithdrawalRequest storage request = withdrawalRequests[series][epoch][msg.sender];
+        uint256 requestedInf = request.infAmount;
+        if (requestedInf == 0) revert NoWithdrawalRequest();
 
-        uint256 price = collateralPriceUsd();
-        uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
-        uint256 debt = debtUsd();
-        uint256 infSupply = inf.totalSupply();
-        if (infSupply == 0 || reserveBefore <= debt) revert NoEquity();
+        // Each request owns a disjoint interval of the epoch. Difference-of-prefixes
+        // distributes every unit exactly without a first/last claimant advantage.
+        uint256 end = request.start + requestedInf;
+        uint256 filledInf = Math.mulDiv(end, requestEpoch.filledInf, requestEpoch.requestedInf)
+            - Math.mulDiv(request.start, requestEpoch.filledInf, requestEpoch.requestedInf);
+        collateralOut = Math.mulDiv(end, requestEpoch.collateralOut, requestEpoch.requestedInf)
+            - Math.mulDiv(request.start, requestEpoch.collateralOut, requestEpoch.requestedInf);
+        if (collateralOut < minCollateralOut) revert Slippage();
+        refundedInf = requestedInf - filledInf;
 
-        uint256 equityBefore = reserveBefore - debt;
-        uint256 usdOut = Math.mulDiv(infIn, equityBefore, infSupply);
-        collateralOut = debt == 0 && infIn == infSupply ? reserveCollateral() : _usdToCollateral(usdOut, price);
-        if (collateralOut == 0 || collateralOut < minCollateralOut) revert Slippage();
+        delete withdrawalRequests[series][epoch][msg.sender];
+        claimableWithdrawalCollateral -= collateralOut;
 
-        uint256 actualUsdOut = _collateralToUsd(collateralOut, price);
-        uint256 reserveAfter = reserveBefore - actualUsdOut;
-        if (!_withinMaxDebtRatio(debt, reserveAfter)) revert DebtRatioTooHigh();
+        if (refundedInf != 0) IERC20(address(requestEpoch.token)).safeTransfer(msg.sender, refundedInf);
+        if (collateralOut != 0) collateral.safeTransfer(recipient, collateralOut);
 
-        inf.burn(msg.sender, infIn);
-        collateral.safeTransfer(recipient, collateralOut);
-
-        emit Defunded(msg.sender, recipient, infIn, collateralOut);
+        emit WithdrawalClaimed(msg.sender, recipient, series, epoch, filledInf, collateralOut, refundedInf);
+        if (filledInf != 0) emit Defunded(msg.sender, recipient, filledInf, collateralOut);
     }
 
     /// @notice Deposit wstETH and mint NaN at oracle value minus the explicit mint fee.
@@ -319,7 +520,7 @@ contract NaNReserve is ReentrancyGuard {
     }
 
     /// @notice Restore an insolvent reserve and replace the wiped-out junior token with a fresh series.
-    /// @dev For outstanding NaN debt, the deposit must restore the configured healthy debt ratio.
+    /// @dev For outstanding NaN debt, the deposit must restore the configured target debt ratio.
     ///      New INF represents the post-recapitalization residual equity dollar-for-dollar. Retiring the
     ///      old INF series prevents underwater holders from receiving a windfall funded by the recapitalizer.
     function recapitalize(uint256 collateralIn, uint256 minInfOut, address recipient)
@@ -342,6 +543,38 @@ contract NaNReserve is ReentrancyGuard {
     // Internal math
     // -------------------------------------------------------------------------
 
+    function _withdrawalQuote(uint256 requestedInf) internal view returns (uint256 filledInf, uint256 collateralOut) {
+        uint256 supply = inf.totalSupply(); // Includes INF locked by all unsettled cohorts.
+        uint256 reserve = reserveCollateral();
+        uint256 debt = debtUsd();
+
+        if (debt == 0) {
+            filledInf = requestedInf;
+            collateralOut = requestedInf == supply ? reserve : Math.mulDiv(requestedInf, reserve, supply);
+            return (filledInf, collateralOut);
+        }
+
+        uint256 price = collateralPriceUsd();
+        uint256 reserveValue = _collateralToUsd(reserve, price);
+        if (reserveValue <= debt) return (0, 0);
+
+        uint256 minimumReserveUsd = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
+        if (reserveValue <= minimumReserveUsd) return (0, 0);
+        uint256 minimumReserveCollateral = Math.mulDiv(minimumReserveUsd, WAD, price, Math.Rounding.Ceil);
+        if (reserve <= minimumReserveCollateral) return (0, 0);
+
+        uint256 availableCollateral = reserve - minimumReserveCollateral;
+        uint256 equity = reserveValue - debt;
+        uint256 maximumUsdOut = _collateralToUsd(availableCollateral, price);
+        filledInf = Math.min(requestedInf, Math.mulDiv(maximumUsdOut, supply, equity));
+        collateralOut = _usdToCollateral(Math.mulDiv(filledInf, equity, supply), price);
+        if (collateralOut == 0) return (0, 0);
+
+        if (!_withinDebtRatio(debt, _collateralToUsd(reserve - collateralOut, price), targetDebtRatioBps)) {
+            revert DebtRatioTooHigh();
+        }
+    }
+
     function _recapitalizationQuote(uint256 collateralIn) internal view returns (uint256 shortfallUsd, uint256 infOut) {
         uint256 price = collateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
@@ -352,11 +585,17 @@ contract NaNReserve is ReentrancyGuard {
         uint256 usdIn = _collateralToUsd(collateralIn, price);
         uint256 requiredReserve;
         if (debt != 0) {
-            requiredReserve = Math.mulDiv(debt, BPS, maxDebtRatioBps, Math.Rounding.Ceil);
+            requiredReserve = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
         }
 
         uint256 requiredUsdIn = requiredReserve > reserveBefore ? requiredReserve - reserveBefore : 0;
         if (usdIn < requiredUsdIn) revert InsufficientRecapitalization();
+        if (
+            debt != 0
+                && _collateralToUsd(reserveCollateral() + collateralIn, price) > Math.mulDiv(debt, BPS, minDebtRatioBps)
+        ) {
+            revert DebtRatioTooLow();
+        }
 
         infOut = reserveBefore + usdIn - debt;
         if (infOut == 0) revert Slippage();
@@ -394,9 +633,13 @@ contract NaNReserve is ReentrancyGuard {
     }
 
     function _withinMaxDebtRatio(uint256 debt, uint256 reserve) internal view returns (bool) {
+        return _withinDebtRatio(debt, reserve, maxDebtRatioBps);
+    }
+
+    function _withinDebtRatio(uint256 debt, uint256 reserve, uint256 ratioBps) internal pure returns (bool) {
         if (debt == 0) return true;
         if (reserve == 0) return false;
-        return debt <= Math.mulDiv(reserve, maxDebtRatioBps, BPS);
+        return debt <= Math.mulDiv(reserve, ratioBps, BPS);
     }
 
     function _pullExact(uint256 amount) internal {

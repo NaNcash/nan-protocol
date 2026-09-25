@@ -16,6 +16,9 @@ contract NaNReserveHandler is Test {
     MockERC20 public immutable collateral;
     MockOracle public immutable oracle;
     NaNReserve public immutable reserve;
+    uint256 public lastWithdrawalSeries;
+    uint256 public lastWithdrawalEpoch;
+    bool public hasWithdrawal;
 
     constructor(MockERC20 collateral_, MockOracle oracle_, NaNReserve reserve_) {
         collateral = collateral_;
@@ -39,11 +42,25 @@ contract NaNReserveHandler is Test {
         try reserve.mint(amount, 0, address(this)) {} catch {}
     }
 
-    function defund(uint96 rawAmount) external {
+    function requestDefund(uint96 rawAmount) external {
         uint256 balance = reserve.inf().balanceOf(address(this));
         if (balance == 0) return;
         uint256 amount = bound(uint256(rawAmount), 1, balance);
-        try reserve.defund(amount, 0, address(this)) {} catch {}
+        reserve.inf().approve(address(reserve), amount);
+        try reserve.requestDefund(amount) returns (uint256 series, uint256 epoch) {
+            lastWithdrawalSeries = series;
+            lastWithdrawalEpoch = epoch;
+            hasWithdrawal = true;
+        } catch {}
+    }
+
+    function processWithdrawal() external {
+        if (!hasWithdrawal) return;
+        uint256 series = lastWithdrawalSeries;
+        uint256 epoch = lastWithdrawalEpoch;
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        try reserve.settleDefundEpoch(series, epoch) {} catch {}
+        try reserve.claimDefund(series, epoch, 0, address(this)) {} catch {}
     }
 
     function redeem(uint96 rawAmount) external {
@@ -74,25 +91,33 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
     function setUp() public {
         collateral = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
-        reserve = new NaNReserve(collateral, oracle, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
         handler = new NaNReserveHandler(collateral, oracle, reserve);
 
         collateral.mint(address(handler), 1_000_000 * WAD);
         handler.initialize();
 
-        bytes4[] memory selectors = new bytes4[](6);
+        bytes4[] memory selectors = new bytes4[](7);
         selectors[0] = handler.fund.selector;
         selectors[1] = handler.mint.selector;
-        selectors[2] = handler.defund.selector;
+        selectors[2] = handler.requestDefund.selector;
         selectors[3] = handler.redeem.selector;
         selectors[4] = handler.recapitalize.selector;
         selectors[5] = handler.movePrice.selector;
+        selectors[6] = handler.processWithdrawal.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
     function invariantDebtAlwaysEqualsNanSupply() public view {
         assertEq(reserve.debtUsd(), reserve.nan().totalSupply());
+    }
+
+    function invariantClaimableWithdrawalCollateralIsNotReserveBacking() public view {
+        assertEq(
+            reserve.reserveCollateral() + reserve.claimableWithdrawalCollateral(),
+            collateral.balanceOf(address(reserve))
+        );
     }
 
     function invariantOutstandingDebtAlwaysHasActiveJuniorCapital() public view {

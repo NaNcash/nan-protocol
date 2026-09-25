@@ -3,6 +3,8 @@ import random
 
 BPS=10_000
 MAX_DR=6_500
+TARGET_DR=5_500
+MIN_DR=3_000
 MINT_FEE=10
 REDEEM_FEE=10
 
@@ -11,6 +13,11 @@ def within(debt,reserve):
     if debt == 0: return True
     if reserve <= 0: return False
     return debt * BPS <= reserve * MAX_DR
+
+def within_target(debt,reserve):
+    if debt == 0: return True
+    if reserve <= 0: return False
+    return debt * BPS <= reserve * TARGET_DR
 
 # Mint invariant: if allowed, resulting DR is <= MAX.
 for _ in range(100_000):
@@ -47,18 +54,21 @@ for _ in range(100_000):
     if abs((r2/d2)-(reserve/debt)) > 1e-9:
         raise AssertionError('pro-rata invariant')
 
-# Recapitalization restores the configured healthy debt ratio and mints exactly
+# Recapitalization restores the configured target debt ratio and mints exactly
 # the post-recapitalization residual equity as the new INF series.
 for _ in range(100_000):
     debt=random.uniform(1,1e9)
     reserve=random.uniform(0,debt)
-    required_reserve=debt*BPS/MAX_DR
+    required_reserve=debt*BPS/TARGET_DR
     min_deposit=required_reserve-reserve
-    deposit=min_deposit+random.uniform(0,1e9)
+    max_deposit=debt*BPS/MIN_DR-reserve
+    deposit=random.uniform(min_deposit,max_deposit)
     new_inf=reserve+deposit-debt
     new_equity=reserve+deposit-debt
-    if not within(debt,reserve+deposit):
+    if not within_target(debt,reserve+deposit):
         raise AssertionError('recapitalization did not restore health')
+    if debt/(reserve+deposit) < MIN_DR/BPS - 1e-12:
+        raise AssertionError('recapitalization breached funding floor')
     if abs(new_inf-new_equity) > 1e-6:
         raise AssertionError('recapitalization invariant')
 
