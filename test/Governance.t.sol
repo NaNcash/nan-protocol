@@ -47,6 +47,8 @@ contract GovernanceTest is Test {
         reserve.setOracle(replacement);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, ALICE));
         reserve.setInfWithdrawalDelay(7 days);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, ALICE));
+        reserve.setInfWithdrawalEpoch(6 hours);
         vm.stopPrank();
     }
 
@@ -92,6 +94,18 @@ contract GovernanceTest is Test {
         vm.prank(BOB);
         reserve.setInfWithdrawalDelay(7 days);
         assertEq(reserve.infWithdrawalDelay(), 7 days);
+    }
+
+    function testWithdrawalEpochBounds() public {
+        assertEq(reserve.infWithdrawalEpoch(), 1 days);
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        reserve.setInfWithdrawalEpoch(1 hours - 1);
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        reserve.setInfWithdrawalEpoch(7 days + 1);
+        reserve.setInfWithdrawalEpoch(1 hours);
+        assertEq(reserve.infWithdrawalEpoch(), 1 hours);
+        reserve.setInfWithdrawalEpoch(7 days);
+        assertEq(reserve.infWithdrawalEpoch(), 7 days);
     }
 
     function testInvalidConfigurationUpdatesAreRejected() public {

@@ -121,6 +121,103 @@ contract InfWithdrawalTest is Test {
         reserve.withdrawalExpiry(1, 10);
     }
 
+    function testEpochChangePreservesCurrentCohortAndAppliesAtBoundary() public {
+        vm.prank(ALICE);
+        assertTrue(inf.transfer(BOB, 10 * WAD));
+        vm.prank(BOB);
+        inf.approve(address(reserve), type(uint256).max);
+        (uint256 currentEpoch, uint256 closesAt) = reserve.currentWithdrawalEpoch();
+        vm.prank(ALICE);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(10 * WAD);
+        assertEq(epoch, currentEpoch);
+        uint256 maturity = reserve.withdrawalMaturity(series, epoch);
+        uint256 expiry = reserve.withdrawalExpiry(series, epoch);
+
+        reserve.setInfWithdrawalEpoch(6 hours);
+        (uint256 unchangedEpoch, uint256 unchangedClose) = reserve.currentWithdrawalEpoch();
+        assertEq(unchangedEpoch, epoch);
+        assertEq(unchangedClose, closesAt);
+        vm.prank(BOB);
+        (, uint256 bobEpoch) = reserve.requestDefund(10 * WAD);
+        assertEq(bobEpoch, epoch);
+        assertEq(reserve.withdrawalMaturity(series, epoch), maturity);
+        assertEq(reserve.withdrawalExpiry(series, epoch), expiry);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.WithdrawalRequestExists.selector);
+        reserve.requestDefund(1);
+
+        vm.warp(closesAt);
+        (uint256 nextEpoch, uint256 nextClose) = reserve.currentWithdrawalEpoch();
+        assertEq(nextEpoch, epoch + 1);
+        assertEq(nextClose, closesAt + 6 hours);
+        vm.prank(ALICE);
+        (, uint256 requestedEpoch) = reserve.requestDefund(10 * WAD);
+        assertEq(requestedEpoch, nextEpoch);
+        assertEq(reserve.withdrawalMaturity(series, nextEpoch), nextClose + 3 days);
+
+        vm.warp(maturity);
+        reserve.settleDefundEpoch(series, epoch);
+        vm.prank(ALICE);
+        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertGt(collateralOut, 0);
+    }
+
+    function testRepeatedEpochUpdatesCannotMoveCurrentBoundary() public {
+        (uint256 epoch, uint256 closesAt) = reserve.currentWithdrawalEpoch();
+        reserve.setInfWithdrawalEpoch(7 days);
+        vm.warp(closesAt - 1);
+        reserve.setInfWithdrawalEpoch(1 hours);
+        (uint256 currentEpoch, uint256 currentClose) = reserve.currentWithdrawalEpoch();
+        assertEq(currentEpoch, epoch);
+        assertEq(currentClose, closesAt);
+        assertEq(reserve.withdrawalEpochScheduleFirstId(), epoch + 1);
+        assertEq(reserve.withdrawalEpochScheduleStart(), closesAt);
+
+        vm.warp(closesAt);
+        (currentEpoch, currentClose) = reserve.currentWithdrawalEpoch();
+        assertEq(currentEpoch, epoch + 1);
+        assertEq(currentClose, closesAt + 1 hours);
+        reserve.setInfWithdrawalEpoch(7 days);
+        vm.warp(currentClose);
+        (uint256 laterEpoch, uint256 laterClose) = reserve.currentWithdrawalEpoch();
+        assertEq(laterEpoch, epoch + 2);
+        assertEq(laterClose, currentClose + 7 days);
+    }
+
+    function testLongerEpochCannotDelayExistingExpiry() public {
+        vm.prank(ALICE);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(10 * WAD);
+        uint256 expiry = reserve.withdrawalExpiry(series, epoch);
+        reserve.setInfWithdrawalEpoch(7 days);
+        vm.warp(expiry);
+        reserve.expireDefundEpoch(series, epoch);
+        vm.prank(ALICE);
+        (, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertEq(refundedInf, 10 * WAD);
+    }
+
+    function testFuzzEpochIdsNeverCollideAcrossLengthChanges(uint32 rawFirst, uint32 rawSecond, uint32 rawAdvance)
+        public
+    {
+        uint256 firstLength = bound(uint256(rawFirst), 1 hours, 7 days);
+        uint256 secondLength = bound(uint256(rawSecond), 1 hours, 7 days);
+        uint256 advance = bound(uint256(rawAdvance), 0, 100 days);
+        (uint256 originalEpoch, uint256 boundary) = reserve.currentWithdrawalEpoch();
+        reserve.setInfWithdrawalEpoch(firstLength);
+        vm.warp(boundary + advance);
+        (uint256 epoch, uint256 closesAt) = reserve.currentWithdrawalEpoch();
+        assertEq(epoch, originalEpoch + 1 + advance / firstLength);
+        assertGt(closesAt, block.timestamp);
+        reserve.setInfWithdrawalEpoch(secondLength);
+        (uint256 sameEpoch, uint256 sameClose) = reserve.currentWithdrawalEpoch();
+        assertEq(sameEpoch, epoch);
+        assertEq(sameClose, closesAt);
+        vm.warp(closesAt);
+        (uint256 nextEpoch, uint256 nextClose) = reserve.currentWithdrawalEpoch();
+        assertEq(nextEpoch, epoch + 1);
+        assertEq(nextClose, closesAt + secondLength);
+    }
+
     function testTemporaryPriceSpikeDoesNotSetWithdrawalPayout() public {
         _mintDebt();
         oracle.setPrice(3_500 * WAD);

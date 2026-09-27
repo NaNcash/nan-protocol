@@ -25,7 +25,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     uint256 public constant MAX_FEE_BPS = 1_000;
     uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
     uint256 public constant MAX_INF_WITHDRAWAL_DELAY = 30 days;
-    uint256 public constant INF_WITHDRAWAL_EPOCH = 1 days;
+    uint256 public constant MIN_INF_WITHDRAWAL_EPOCH = 1 hours;
+    uint256 public constant MAX_INF_WITHDRAWAL_EPOCH = 7 days;
     uint256 public constant INF_SETTLEMENT_WINDOW = 1 days;
 
     error ZeroAmount();
@@ -71,8 +72,12 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     uint256 public maxDebtRatioBps;
     uint256 public mintFeeBps;
     uint256 public redeemFeeBps;
-    /// @notice Delay for newly opened daily INF withdrawal cohorts; existing cohorts keep their maturity.
+    /// @notice Delay for newly opened INF withdrawal cohorts; existing cohorts keep their maturity.
     uint256 public infWithdrawalDelay = 3 days;
+    /// @notice Epoch length used from withdrawalEpochScheduleStart onward, initially one day.
+    uint256 public infWithdrawalEpoch = 1 days;
+    uint256 public withdrawalEpochScheduleStart;
+    uint256 public withdrawalEpochScheduleFirstId;
 
     struct WithdrawalEpoch {
         INFToken token;
@@ -129,6 +134,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     event DebtRatiosUpdated(uint256 minDebtRatioBps, uint256 targetDebtRatioBps, uint256 maxDebtRatioBps);
     event FeesUpdated(uint256 mintFeeBps, uint256 redeemFeeBps);
     event InfWithdrawalDelayUpdated(uint256 previousDelay, uint256 newDelay);
+    event InfWithdrawalEpochUpdated(uint256 previousLength, uint256 newLength, uint256 effectiveAt);
 
     constructor(
         IERC20 collateral_,
@@ -176,6 +182,20 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 previousDelay = infWithdrawalDelay;
         infWithdrawalDelay = newDelay;
         emit InfWithdrawalDelayUpdated(previousDelay, newDelay);
+    }
+
+    /// @notice Change batching length at the next epoch boundary, preserving the current epoch.
+    /// @dev Another update before that boundary replaces the pending length without moving the boundary.
+    function setInfWithdrawalEpoch(uint256 newLength) external onlyOwner {
+        if (newLength < MIN_INF_WITHDRAWAL_EPOCH || newLength > MAX_INF_WITHDRAWAL_EPOCH) {
+            revert InvalidConfiguration();
+        }
+        (uint256 epoch, uint256 endsAt) = currentWithdrawalEpoch();
+        uint256 previousLength = infWithdrawalEpoch;
+        withdrawalEpochScheduleFirstId = epoch + 1;
+        withdrawalEpochScheduleStart = endsAt;
+        infWithdrawalEpoch = newLength;
+        emit InfWithdrawalEpochUpdated(previousLength, newLength, endsAt);
     }
 
     /// @notice Configuration must always have an authorizer able to rotate failed dependencies.
@@ -229,6 +249,16 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     function reserveCollateral() public view returns (uint256) {
         return collateral.balanceOf(address(this)) - claimableWithdrawalCollateral;
+    }
+
+    /// @notice Current batching epoch ID and its fixed closing timestamp.
+    /// @dev IDs are monotonic across schedule changes; clients must not derive them by dividing timestamps.
+    function currentWithdrawalEpoch() public view returns (uint256 epoch, uint256 endsAt) {
+        uint256 start = withdrawalEpochScheduleStart;
+        uint256 firstId = withdrawalEpochScheduleFirstId;
+        if (block.timestamp < start) return (firstId - 1, start);
+        uint256 offset = (block.timestamp - start) / infWithdrawalEpoch;
+        return (firstId + offset, start + (offset + 1) * infWithdrawalEpoch);
     }
 
     /// @notice The fixed maturity of an opened series-specific withdrawal cohort.
@@ -365,17 +395,18 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Lock active INF for a withdrawal. No collateral amount is fixed at request time.
-    /// @dev Requests in the same daily cohort share the delay snapshotted when it first opens.
+    /// @dev Requests in the same epoch share the delay snapshotted when its cohort first opens.
     function requestDefund(uint256 infIn) external nonReentrant returns (uint256 series, uint256 epoch) {
         if (infIn == 0) revert ZeroAmount();
         series = juniorSeries;
-        epoch = block.timestamp / INF_WITHDRAWAL_EPOCH;
+        uint256 endsAt;
+        (epoch, endsAt) = currentWithdrawalEpoch();
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         WithdrawalRequest storage request = withdrawalRequests[series][epoch][msg.sender];
         if (request.infAmount != 0) revert WithdrawalRequestExists();
         if (address(requestEpoch.token) == address(0)) {
             requestEpoch.token = inf;
-            requestEpoch.maturity = SafeCast.toUint64((epoch + 1) * INF_WITHDRAWAL_EPOCH + infWithdrawalDelay);
+            requestEpoch.maturity = SafeCast.toUint64(endsAt + infWithdrawalDelay);
         }
 
         IERC20(address(inf)).safeTransferFrom(msg.sender, address(this), infIn);
