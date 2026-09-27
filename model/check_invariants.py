@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import random
 
+random.seed(0x4E414E)
+
 BPS=10_000
 MAX_DR=6_500
 TARGET_DR=5_500
@@ -54,22 +56,59 @@ for _ in range(100_000):
     if abs((r2/d2)-(reserve/debt)) > 1e-9:
         raise AssertionError('pro-rata invariant')
 
-# Recapitalization restores the configured target debt ratio and mints exactly
-# the post-recapitalization residual equity as the new INF series.
+# Same-token funding: integer arithmetic mirrors Solidity rounding. Splitting
+# at the same price/time must not increase issuance, including across target.
+WAD = 10**18
+
+
+def funding_quote(deposit, reserve, debt, supply, floor_price):
+    equity = max(reserve - debt, 0)
+    if equity * WAD // supply < floor_price:
+        return deposit * WAD // floor_price
+    return deposit * supply // equity
+
+
 for _ in range(100_000):
-    debt=random.uniform(1,1e9)
-    reserve=random.uniform(0,debt)
-    required_reserve=debt*BPS/TARGET_DR
-    min_deposit=required_reserve-reserve
-    max_deposit=debt*BPS/MIN_DR-reserve
-    deposit=random.uniform(min_deposit,max_deposit)
-    new_inf=reserve+deposit-debt
-    new_equity=reserve+deposit-debt
-    if not within_target(debt,reserve+deposit):
-        raise AssertionError('recapitalization did not restore health')
-    if debt/(reserve+deposit) < MIN_DR/BPS - 1e-12:
-        raise AssertionError('recapitalization breached funding floor')
-    if abs(new_inf-new_equity) > 1e-6:
-        raise AssertionError('recapitalization invariant')
+    debt = random.randrange(WAD, 10**9 * WAD)
+    reserve = random.randrange(0, debt * 2)
+    supply = random.randrange(WAD, 10**12 * WAD)
+    max_deposit = debt * BPS // MIN_DR - reserve
+    deposit = random.randrange(2, max_deposit)
+    split = random.randrange(1, deposit)
+    floor_price = random.randrange(1, 10 * WAD)
+    minted = funding_quote(deposit, reserve, debt, supply, floor_price)
+    first = funding_quote(split, reserve, debt, supply, floor_price)
+    second = funding_quote(deposit - split, reserve + split, debt, supply + first, floor_price)
+    if first + second > minted:
+        raise AssertionError('splitting funding increased issuance')
+    total_supply = supply + minted
+    equity = max(reserve + deposit - debt, 0)
+    nav = equity * WAD // total_supply
+    if nav * total_supply // WAD > equity:
+        raise AssertionError('reported junior claims exceed equity')
+    if debt * BPS < (reserve + deposit) * MIN_DR:
+        raise AssertionError('funding breached minimum debt ratio')
+    if reserve <= debt and equity * minted // total_supply > deposit:
+        raise AssertionError('recapitalizer received more NAV than contributed')
+    # The old supply persists; dilution changes ownership, not token identity.
+    if total_supply < supply:
+        raise AssertionError('existing INF was cancelled')
+
+# The floor must remain positive and nonincreasing, including very long gaps.
+def decayed_floor(initial, elapsed, period):
+    n, remainder = divmod(elapsed, period)
+    if n >= 256:
+        return 1
+    numerator = (initial >> n) * (2 * period - remainder)
+    return max(1, (numerator + 2 * period - 1) // (2 * period))
+
+
+for _ in range(100_000):
+    initial = random.randrange(1, 10**40)
+    period = random.randrange(3600, 30 * 86400 + 1)
+    first = random.randrange(0, 1000 * period)
+    second = random.randrange(first, 1001 * period)
+    if not 1 <= decayed_floor(initial, second, period) <= decayed_floor(initial, first, period) <= initial:
+        raise AssertionError('decay positivity or monotonicity invariant')
 
 print('100k randomized checks per invariant: OK')

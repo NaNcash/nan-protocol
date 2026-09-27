@@ -5,7 +5,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 
 /// @notice The junior residual claim on the NaN reserve.
-/// @dev A reserve may retire this token during insolvency and deploy a new junior series.
+/// @dev One permanent token per reserve. Recovery funding dilutes existing shares without retiring them.
 contract INFToken is ERC20, ERC20Permit {
     error OnlyReserve();
     error ZeroAddress();

@@ -58,9 +58,16 @@ contract NaNReserveHandler is Test {
         if (!hasWithdrawal) return;
         uint256 series = lastWithdrawalSeries;
         uint256 epoch = lastWithdrawalEpoch;
-        vm.warp(reserve.withdrawalMaturity(series, epoch));
-        try reserve.settleDefundEpoch(series, epoch) {} catch {}
-        try reserve.claimDefund(series, epoch, 0, address(this)) {} catch {}
+        uint256 maturity = reserve.withdrawalMaturity(series, epoch);
+        if (block.timestamp < maturity) vm.warp(maturity);
+        if (block.timestamp >= reserve.withdrawalExpiry(series, epoch)) {
+            try reserve.expireDefundEpoch(series, epoch) {} catch {}
+        } else {
+            try reserve.settleDefundEpoch(series, epoch) {} catch {}
+        }
+        try reserve.claimDefund(series, epoch, 0, address(this)) {
+            hasWithdrawal = false;
+        } catch {}
     }
 
     function redeem(uint96 rawAmount) external {
@@ -78,6 +85,11 @@ contract NaNReserveHandler is Test {
     function movePrice(uint96 rawPrice) external {
         oracle.setPrice(bound(uint256(rawPrice), 100 * WAD, 6_000 * WAD));
     }
+
+    function advanceAndCheckpoint(uint32 rawSeconds) external {
+        vm.warp(block.timestamp + bound(uint256(rawSeconds), 1, 30 days));
+        reserve.checkpointRecovery();
+    }
 }
 
 contract NaNReserveInvariantTest is StdInvariant, Test {
@@ -87,6 +99,7 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
     MockOracle internal oracle;
     NaNReserve internal reserve;
     NaNReserveHandler internal handler;
+    address internal originalInf;
 
     function setUp() public {
         collateral = new MockERC20("Wrapped stETH", "wstETH");
@@ -96,8 +109,9 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
 
         collateral.mint(address(handler), 1_000_000 * WAD);
         handler.initialize();
+        originalInf = address(reserve.inf());
 
-        bytes4[] memory selectors = new bytes4[](7);
+        bytes4[] memory selectors = new bytes4[](8);
         selectors[0] = handler.fund.selector;
         selectors[1] = handler.mint.selector;
         selectors[2] = handler.requestDefund.selector;
@@ -105,12 +119,23 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         selectors[4] = handler.recapitalize.selector;
         selectors[5] = handler.movePrice.selector;
         selectors[6] = handler.processWithdrawal.selector;
+        selectors[7] = handler.advanceAndCheckpoint.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
     function invariantDebtAlwaysEqualsNanSupply() public view {
         assertEq(reserve.debtUsd(), reserve.nan().totalSupply());
+    }
+
+    function invariantInfAddressAndNamespaceNeverChange() public view {
+        assertEq(address(reserve.inf()), originalInf);
+        assertEq(reserve.juniorSeries(), 1);
+    }
+
+    function invariantIssuancePriceNeverBelowRealNavOrZero() public view {
+        assertGe(reserve.fundingPriceUsd(), reserve.infPriceUsd());
+        assertGt(reserve.fundingPriceUsd(), 0);
     }
 
     function invariantClaimableWithdrawalCollateralIsNotReserveBacking() public view {
