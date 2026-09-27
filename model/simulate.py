@@ -49,17 +49,35 @@ show("after 1% yield", s)
 # 25% ETH/wstETH market drawdown.
 s.reserve *= 0.75
 show("after 25% drawdown", s)
+# First observed stress starts a per-share floor at the maximum-ratio boundary.
+# This float model is illustrative; Solidity uses conservative integer rounding.
+max_debt_ratio = 0.65
+initial_floor = (s.nan / max_debt_ratio - s.nan) / s.inf
+old_inf = s.inf
 
 # Another 25% drawdown from that level.
 s.reserve *= 0.75
 show("after second -25%", s)
 
-# A recapitalizer restores the configured 55% target debt ratio. The old INF
-# series is retired and the post-recapitalization residual equity becomes new
-# INF at $1.
+# After one halving period, an incremental recapitalizer buys the SAME INF.
+# This first contribution need not repair all of the senior deficit.
+floor_price = initial_floor / 2
+recap_in = 10_000
+s.inf += recap_in / max(s.inf_price, floor_price)
+s.reserve += recap_in
+show("partial recap", s)
+
+# A second funder restores the sample target at the same timestamp. Retain a
+# binding floor even when the debt ratio recovers: no cheap second transaction.
 target_debt_ratio = 0.55
 required_reserve = s.nan / target_debt_ratio
 recap_in = required_reserve - s.reserve
+s.inf += recap_in / max(s.inf_price, floor_price)
 s.reserve += recap_in
-s.inf = s.reserve - s.nan
-show("after recapitalization", s)
+show("funded to target", s)
+print(f"Old INF ownership: {old_inf / s.inf:.2%}; issuance floor: ${floor_price:.4f}")
+
+# A later collateral rebound benefits both old and new INF proportionally.
+s.reserve *= 1.25
+show("after 25% rebound", s)
+print(f"Old INF residual claim: ${s.equity * old_inf / s.inf:,.0f}")

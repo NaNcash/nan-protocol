@@ -10,7 +10,7 @@ All USD values use 18 decimals. The collateral token must also use 18 decimals.
 R = oracle USD value of reserve wstETH
 D = NaN total supply
 E = max(R - D, 0)
-S = active INF total supply
+S = permanent INF total supply (including queued, unburned shares)
 
 INF NAV = E / S
 ```
@@ -34,7 +34,7 @@ The debt ratio is `D/R`, with governance-set bounds `0 < min < target < max < 10
 
 ### Fund
 
-Funding deposits wstETH and mints INF at the current residual NAV. The initial INF series bootstraps at $1. With outstanding debt, funding is capped so the post-funding ratio remains at or above the minimum; debt-free bootstrap funding is uncapped. Funding at zero equity is disabled because any ordinary NAV formula would transfer value from the recapitalizer to underwater junior holders.
+Funding deposits wstETH and mints the permanent INF token. With no supply, it bootstraps at $1; otherwise it uses the greater of current residual NAV and the recovery issuance floor described below. Zero-equity and partial recovery funding are allowed. With outstanding debt, funding is capped so the post-funding ratio remains at or above the minimum; debt-free funding is uncapped. Ordinary NAV quotes use the exact equity/supply ratio, not a rounded per-token price. INF output rounds down.
 
 ### Mint
 
@@ -48,7 +48,7 @@ All collateral, including the fee value, stays in the reserve. Minting requires 
 
 ### Defund
 
-There is no instantaneous INF exit. An INF holder locks a fixed number of active-series tokens with `requestDefund`. Requests are grouped by cohort, with one request per address per cohort. The authorizer can set the withdrawal delay between one and 30 days; it starts at three days. Batching epochs start at one day and can be set between one hour and seven days. A cohort snapshots the delay when its first request arrives and matures that long after its closing boundary. It can be settled permissionlessly during the following day. The actual wait is the snapshotted delay plus the remaining batching time. Changing the delay or epoch length cannot rewrite an open cohort's maturity or expiry. If no one settles it in the window, it expires and the INF can be reclaimed without an oracle.
+There is no instantaneous INF exit. An INF holder locks a fixed number of tokens with `requestDefund`. Requests are grouped by cohort, with one request per address per cohort. The authorizer can set the withdrawal delay between one and 30 days; it starts at three days. Batching epochs start at one day and can be set between one hour and seven days. A cohort snapshots the delay when its first request arrives and matures that long after its closing boundary. It can be settled permissionlessly during the following day. The actual wait is the snapshotted delay plus the remaining batching time. Changing the delay or epoch length cannot rewrite an open cohort's maturity or expiry. If no one settles it in the window, it expires and the INF can be reclaimed without an oracle. The legacy `series` argument is a namespace fixed at 1; there are no token replacements. Queued INF participates in recapitalization dilution like other outstanding INF.
 
 An epoch-length update takes effect only after the current epoch closes. The schedule anchors the next epoch ID and its start timestamp; IDs remain monotonic rather than being recalculated as timestamp divided by a mutable duration. Repeated updates before that boundary replace the pending duration but preserve the current epoch's ID and end time. Clients must read `currentWithdrawalEpoch()` or record the ID returned by `requestDefund`.
 
@@ -70,21 +70,36 @@ NaN redemption price = R / D
 
 This preserves the reserve/debt ratio across redemptions, apart from conservative rounding. The final insolvent redeemer receives all remaining collateral so rounding dust cannot become trapped.
 
-### Recapitalize
+### Recovery issuance and recapitalization
 
-At zero junior equity, a recapitalizer must restore the reserve to the configured target debt ratio:
+INF has one immutable address and recapitalization never cancels old balances. `fund` can accept incremental capital during stress or insolvency. `recapitalize` is an insolvency-only convenience wrapper using exactly the same quote, requiring existing INF supply. Neither requires a single deposit to restore the target ratio. All funding still obeys the minimum debt-ratio cap.
+
+A primary observation of `D/R > max` begins a pricing episode before equity reaches zero. Its initial USD/INF floor is the NAV at the maximum-ratio boundary, rounded up:
 
 ```text
-required reserve = ceil(D / targetDebtRatio)
-required capital = required reserve - R
-new INF out = R + usdIn - D
+boundaryEquity = ceil(D * (BPS - max) / max)
+P0 = max(1, ceil(boundaryEquity * WAD / S))
 ```
 
-For outstanding debt, recapitalization therefore exits directly into the Healthy state rather than merely crossing back above 100% collateralization. The old INF contract is retired atomically and a new OpenZeppelin-based INF contract becomes active. The new series starts with NAV of $1; the recapitalizer explicitly bears the old senior shortfall and supplies a fresh junior buffer. This is a wipeout model, not an auction. Applications must follow `inf()`, `juniorSeries`, and `Recapitalized` rather than assuming INF has a permanent address.
+`P0`, start time, halving interval `T`, and target exit ratio are snapshotted. The floor is a fixed per-share USD price for the episode, independent of later deposits. By default `T = 1 day`; the authorizer may configure one hour through 30 days for future episodes. This interval is unrelated to the three-day withdrawal delay.
 
-An overfunded recapitalization cannot push the post-recapitalization debt ratio below the configured minimum. The target and minimum therefore define an allowed recapitalization range while debt remains outstanding.
+```text
+n = floor(elapsed / T)
+u = elapsed % T
+Pfloor = max(1, ceil((P0 >> n) * (2*T - u) / (2*T)))
+```
 
-If the last insolvent NaN redemption exhausts both debt and collateral, `recapitalize` can similarly retire the worthless INF series and restart the system without a senior shortfall.
+For `n >= 256`, the floor is one price wei. The schedule linearly interpolates between halvings; it is not a custom exponential approximation. Full-precision arithmetic uses OpenZeppelin Math. While the floor exceeds real NAV, `infOut = floor(usdIn * WAD / Pfloor)`; otherwise `infOut = floor(usdIn * S / E)`. New capital first fills any senior deficit, so its immediate junior NAV can be less than its purchase price, including zero. The issuance floor never changes actual senior liabilities, reserve valuation, INF NAV, or withdrawal entitlements.
+
+An episode clears on a fresh observation only if the debt ratio is at/below its snapshotted target AND real NAV has caught up to the remaining floor, or INF supply is zero. Thus restoration of a safe ratio can precede the end of recovery pricing. Removing a binding floor immediately at the ratio boundary would reward splitting one deposit into two; retaining it avoids that price discontinuity. Repeated distress while an episode remains active does not restart its clock. A new breach after an observed completed recovery starts a new episode.
+
+Ignoring rounding, a deposit `C` at a binding price `P` changes NAV to `(R + C - D) / (S + C/P)` once solvent. If pre-deposit NAV is below `P`, post-deposit NAV remains below `P`; otherwise exact-NAV funding preserves NAV. Consequently, at a fixed timestamp/oracle price, splitting a deposit cannot access a lower second-tranche price through the funding operation itself. Solidity fuzz tests also check integer rounding and crossing the target boundary. This does not remove the economic incentive to wait for time decay.
+
+Anyone may call `checkpointRecovery`. Funding and minting observe before and after their changes; primary redemptions do likewise; debt-bearing INF settlement observes before quoting. Oracle-free debt-free settlement does not observe. Failed transactions do not persist observations. View quotes project the current primary observation without storing it. Fallback redemptions do not start or clear recovery. Wall time, including outages, counts once an episode starts; unobserved rebounds cannot reset it. This is not proof of continuous insolvency and needs monitoring.
+
+If a final insolvent redemption exhausts both debt and collateral, surviving INF still exists. An already-active floor continues; absent a recorded episode (for example after fallback-only redemptions), fresh primary observation starts a $1 floor that then decays. Subsequent funding dilutes the old supply without replacing it.
+
+See [RECAPITALIZATION.md](RECAPITALIZATION.md) for design rationale and review gates. This is inspired by FUM's same-token funding principle, not a port of its complete pricing algorithm. Capital arrival is not guaranteed; waiting for cheaper issuance, early-funder losses, extreme dilution, and future INF-governance capture need economic review.
 
 ## Oracle
 
@@ -111,8 +126,9 @@ The reserve has no upgrade path. Its OpenZeppelin two-step owner is the authoriz
 - mint and redemption fees, each capped at 10%.
 - the delay for newly opened INF withdrawal cohorts, between one and 30 days;
 - the batching epoch length, between one hour and seven days, effective at the next boundary.
+- the recovery issuance-price halving period, between one hour and 30 days, for future episodes only.
 
-The collateral address, senior/junior accounting rules, and one-day settlement window remain fixed. Existing withdrawal cohorts retain their snapshotted maturities. The authorizer cannot mint claims, pause users, or extract collateral. Ownership cannot be renounced and changes hands through two-step acceptance. A timelocked DAO should own the reserve in production; this contract does not embed a Governor or TimelockController. Because the authorizer can choose a router with arbitrary prices or change withdrawal/mint capacity, users must monitor governance actions and treat the authorizer as a high-trust dependency.
+The collateral and INF addresses, senior/junior accounting rules, and one-day settlement window remain fixed. Existing withdrawal cohorts retain their snapshotted maturities, and pricing episodes retain their initial price, clock, halving period and exit ratio. The authorizer cannot mint claims, pause users, or extract collateral. Ownership cannot be renounced and changes hands through two-step acceptance. A timelocked DAO should own the reserve in production; this contract does not embed a Governor or TimelockController. Because the authorizer can choose a router with arbitrary prices or change withdrawal/mint capacity, users must monitor governance actions and treat the authorizer as a high-trust dependency. The new accounting cannot be installed into a previously deployed immutable reserve.
 
 Oracle freshness remains a liveness dependency for normal operations. NaN redemption can continue through the Uniswap TWAP fallback when the primary fails. If the primary and either Uniswap pool fail, redemption halts until the authorizer selects a working router; there is no unsafe unpriced redemption path.
 
@@ -125,5 +141,5 @@ Before a real deployment accepts NaN minting:
 3. Select parameters using stress tests rather than the repository defaults.
 4. Seed a publicly disclosed INF buffer large enough for the intended NaN issuance.
 5. Publish verified source, deployment transactions, contract addresses, and monitoring.
-6. Ensure integrators handle INF series retirement and do not list retired INF as an active reserve claim.
+6. Ensure integrators distinguish issuance price from actual NAV, understand dilution, checkpoint recovery observations, and use the revised recapitalization event ABI.
 7. Deploy and verify a timelocked authorizer, and rehearse oracle-router rotation and parameter changes.

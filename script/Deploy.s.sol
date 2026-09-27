@@ -61,7 +61,7 @@ contract Deploy is Script {
         console2.log("UniswapV3TwapOracle", address(fallbackOracle));
         console2.log("NaNReserve", address(reserve));
         console2.log("NaNToken", address(reserve.nan()));
-        console2.log("INFToken series 1", address(reserve.inf()));
+        console2.log("Permanent INFToken", address(reserve.inf()));
         console2.log("Authorizer", config.authorizer);
     }
 
