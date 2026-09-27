@@ -112,4 +112,52 @@ contract OracleFallbackTest is Test {
         vm.expectRevert(WstEthUsdOracle.FallbackUnavailable.selector);
         reserve.redeem(1 * WAD, 0, BOB);
     }
+
+    function testFallbackCannotStartRecoveryOrAllowCheckpoint() public {
+        primaryFeed.setUnavailable(true);
+        fallbackOracle.setPrice(1_000 * WAD);
+        vm.prank(BOB);
+        reserve.redeem(1_000 * WAD, 0, BOB);
+        (, uint256 initial,,) = reserve.recovery();
+        assertEq(initial, 0);
+        vm.expectRevert(MockAggregator.FeedUnavailable.selector);
+        reserve.checkpointRecovery();
+    }
+
+    function testFallbackCannotClearRecoveryAndOutageTimeStillCounts() public {
+        primaryFeed.setRoundData(2, 1_000e8, block.timestamp, 2);
+        reserve.checkpointRecovery();
+        (uint256 start, uint256 initial,,) = reserve.recovery();
+        primaryFeed.setUnavailable(true);
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(BOB);
+        reserve.redeem(1_000 * WAD, 0, BOB);
+        (uint256 afterStart, uint256 afterInitial,,) = reserve.recovery();
+        assertEq(afterStart, start);
+        assertEq(afterInitial, initial);
+        primaryFeed.setUnavailable(false);
+        primaryFeed.setRoundData(3, 1_000e8, block.timestamp, 3);
+        assertEq(reserve.recoveryFloorPriceUsd(), initial >> 1);
+    }
+
+    function testDepletedReserveAfterFallbackRedemptionCanRestartWithoutReplacingInf() public {
+        primaryFeed.setUnavailable(true);
+        fallbackOracle.setPrice(1_000 * WAD);
+        uint256 balance = reserve.nan().balanceOf(BOB);
+        vm.prank(BOB);
+        reserve.redeem(balance, 0, BOB);
+        assertEq(reserve.reserveCollateral(), 0);
+        assertEq(reserve.debtUsd(), 0);
+        (, uint256 initial,,) = reserve.recovery();
+        assertEq(initial, 0);
+        primaryFeed.setUnavailable(false);
+        uint256 oldSupply = reserve.inf().totalSupply();
+        assertEq(reserve.fundingPriceUsd(), WAD);
+        vm.prank(BOB);
+        uint256 out = reserve.fund(WAD, 0, BOB);
+        assertEq(out, 3_000 * WAD);
+        assertEq(reserve.inf().balanceOf(ALICE), oldSupply);
+        assertEq(reserve.inf().totalSupply(), oldSupply + out);
+        assertEq(reserve.juniorSeries(), 1);
+    }
 }
