@@ -158,6 +158,40 @@ contract InfRecoveryTest is Test {
         assertApproxEqAbs(reserve.fundingPriceUsd(), reserve.infPriceUsd(), 1);
     }
 
+    function testSplitAtTargetBoundaryCannotBuyCheaperSecondTranche() public {
+        _crash();
+        uint256 snapshot = vm.snapshotState();
+        vm.prank(BOB);
+        uint256 whole = reserve.fund(350 * WAD, 0, BOB);
+        assertTrue(vm.revertToStateAndDelete(snapshot));
+        vm.prank(BOB);
+        uint256 parts = reserve.fund(278 * WAD, 0, BOB);
+        assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
+        vm.prank(BOB);
+        parts += reserve.fund(72 * WAD, 0, BOB);
+        assertLe(parts, whole);
+        assertApproxEqAbs(parts, whole, 1);
+    }
+
+    function testFlashCrashFundingDilutesButDoesNotExcludeOriginalHolderFromRebound() public {
+        _crash();
+        vm.prank(BOB);
+        reserve.recapitalize(10 * WAD, 0, BOB);
+        uint256 oldBalance = inf.balanceOf(ALICE);
+        uint256 supply = inf.totalSupply();
+        assertLt(oldBalance, supply);
+        assertEq(reserve.equityUsd(), 0);
+        oracle.setPrice(3_000 * WAD);
+        reserve.checkpointRecovery();
+        assertEq(inf.balanceOf(ALICE), oldBalance);
+        assertEq(inf.totalSupply(), supply);
+        uint256 oldClaim = Math.mulDiv(reserve.equityUsd(), oldBalance, supply);
+        uint256 newClaim = Math.mulDiv(reserve.equityUsd(), inf.balanceOf(BOB), supply);
+        assertGt(oldClaim, 0);
+        assertGt(newClaim, 0);
+        assertLe(oldClaim + newClaim, reserve.equityUsd());
+    }
+
     function testPartialRecapitalizationDoesNotInventEquityOrWriteDownDebt() public {
         _crash();
         uint256 debt = reserve.debtUsd();
