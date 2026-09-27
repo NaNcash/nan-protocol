@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {MockERC20, MockERC20Decimals, MockFeeOnTransferERC20} from "./mocks/MockERC20.sol";
 import {MockOracle} from "./mocks/MockOracle.sol";
 import {NaNReserve} from "../src/NaNReserve.sol";
@@ -58,7 +57,7 @@ contract NaNReserveTest is Test {
         reserve.settleDefundEpoch(series, epoch);
     }
 
-    function testDeploymentCreatesPermitTokensAndFirstJuniorSeries() public view {
+    function testDeploymentCreatesPermanentPermitTokens() public view {
         assertEq(nan.name(), "NaN");
         assertEq(inf.name(), "NaN Junior");
         assertEq(nan.reserve(), address(reserve));
@@ -280,17 +279,20 @@ contract NaNReserveTest is Test {
     function testCanRestartAfterFinalInsolventRedemption() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
-        INFToken retiredInf = reserve.inf();
+        address originalInf = address(inf);
         uint256 nanBalance = nan.balanceOf(BOB);
 
         vm.prank(BOB);
         reserve.redeem(nanBalance, 0, BOB);
-        vm.prank(ALICE);
-        uint256 infOut = reserve.recapitalize(10 * WAD, 15_000 * WAD, ALICE);
+        uint256 quoted = reserve.previewFund(10 * WAD);
+        vm.prank(BOB);
+        uint256 infOut = reserve.recapitalize(10 * WAD, quoted, BOB);
 
-        assertEq(infOut, 15_000 * WAD);
-        assertNotEq(address(reserve.inf()), address(retiredInf));
-        assertEq(reserve.infPriceUsd(), WAD);
+        assertEq(infOut, quoted);
+        assertEq(address(reserve.inf()), originalInf);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.totalSupply(), 300_000 * WAD + infOut);
+        assertEq(reserve.equityUsd(), 15_000 * WAD);
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.NoDebt));
     }
 
@@ -300,52 +302,59 @@ contract NaNReserveTest is Test {
         reserve.recapitalize(10 * WAD, 0, ALICE);
     }
 
-    function testOrdinaryFundingCannotSubsidizeUnderwaterInf() public {
+    function testOrdinaryFundingUsesRecoveryFloorWhenUnderwater() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
 
-        vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.RecapitalizationRequired.selector);
-        reserve.fund(100 * WAD, 0, ALICE);
+        uint256 quote = reserve.previewFund(10 * WAD);
+        vm.prank(BOB);
+        assertEq(reserve.fund(10 * WAD, quote, BOB), quote);
+        assertGt(quote, 0);
+        assertEq(reserve.infPriceUsd(), 0);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
     }
 
-    function testRecapitalizationRestoresHealthyRatioAndRetiresOldInf() public {
+    function testLargeRecapitalizationRestoresHealthyRatioWithoutReplacingInf() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
-        INFToken retiredInf = reserve.inf();
+        address originalInf = address(inf);
         assertEq(reserve.equityUsd(), 0);
 
-        vm.prank(ALICE);
-        uint256 infOut = reserve.recapitalize(278 * WAD, 297_540 * WAD, ALICE);
+        uint256 quote = reserve.previewFund(278 * WAD);
+        vm.prank(BOB);
+        uint256 infOut = reserve.recapitalize(278 * WAD, quote, BOB);
 
         INFToken newInf = reserve.inf();
-        assertNotEq(address(newInf), address(retiredInf));
-        assertEq(reserve.juniorSeries(), 2);
-        assertEq(infOut, 297_540 * WAD);
-        assertEq(newInf.balanceOf(ALICE), infOut);
-        assertEq(newInf.totalSupply(), infOut);
-        assertEq(retiredInf.balanceOf(ALICE), 300_000 * WAD);
-        assertEq(reserve.infPriceUsd(), WAD);
+        assertEq(address(newInf), originalInf);
+        assertEq(reserve.juniorSeries(), 1);
+        assertEq(infOut, quote);
+        assertEq(newInf.balanceOf(BOB), infOut);
+        assertEq(newInf.totalSupply(), 300_000 * WAD + infOut);
+        assertEq(newInf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(reserve.equityUsd(), 297_540 * WAD);
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Healthy));
         assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
     }
 
-    function testRecapitalizationMustRestoreHealthyRatio() public {
+    function testRecapitalizationCanBeIncremental() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
 
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.InsufficientRecapitalization.selector);
-        reserve.recapitalize(277 * WAD, 0, ALICE);
+        reserve.recapitalize(1 * WAD, 0, ALICE);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Insolvent));
+        assertEq(reserve.reserveUsd(), 421_500 * WAD);
+        assertEq(reserve.debtUsd(), 539_460 * WAD);
     }
 
     function testRecapitalizationSlippageProtection() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
 
+        uint256 quote = reserve.previewFund(278 * WAD);
         vm.prank(ALICE);
         vm.expectRevert(NaNReserve.Slippage.selector);
-        reserve.recapitalize(278 * WAD, 297_540 * WAD + 1, ALICE);
+        reserve.recapitalize(278 * WAD, quote + 1, ALICE);
     }
 
     function testRecapitalizationOnlyDuringInsolvency() public {
@@ -355,24 +364,19 @@ contract NaNReserveTest is Test {
         reserve.recapitalize(100 * WAD, 0, ALICE);
     }
 
-    function testRetiredInfCannotWithdrawFromReserve() public {
+    function testOriginalInfCanWithdrawAfterRecapitalizationAndRecovery() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
-        INFToken retiredInf = reserve.inf();
         vm.prank(ALICE);
         reserve.recapitalize(278 * WAD, 0, BOB);
 
-        vm.prank(BOB);
-        reserve.fund(100 * WAD, 0, BOB);
-
-        INFToken activeInf = reserve.inf();
+        oracle.setPrice(3_000 * WAD);
+        (uint256 series, uint256 epoch) = _requestAndSettle(1 * WAD);
         vm.prank(ALICE);
-        activeInf.approve(address(reserve), type(uint256).max);
-        vm.prank(ALICE);
-        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, ALICE, 0, 1 * WAD));
-        reserve.requestDefund(1 * WAD);
-
-        assertEq(retiredInf.balanceOf(ALICE), 300_000 * WAD);
+        (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertGt(collateralOut, 0);
+        assertEq(refundedInf, 0);
+        assertEq(inf.balanceOf(ALICE), 299_999 * WAD);
     }
 
     function testRejectsZeroOraclePrice() public {

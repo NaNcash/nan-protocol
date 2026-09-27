@@ -292,21 +292,23 @@ contract InfWithdrawalTest is Test {
         assertEq(collateral.balanceOf(address(reserve)), 0);
     }
 
-    function testRetiredSeriesRequestCannotClaimFromNewSeries() public {
+    function testQueuedInfSurvivesRecapitalizationAndParticipatesInRecovery() public {
         _mintDebt();
         vm.prank(ALICE);
         (uint256 series, uint256 epoch) = reserve.requestDefund(10_000 * WAD);
         oracle.setPrice(1_500 * WAD);
         vm.prank(BOB);
         reserve.recapitalize(278 * WAD, 0, BOB);
+        oracle.setPrice(3_000 * WAD);
 
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         reserve.settleDefundEpoch(series, epoch);
         vm.prank(ALICE);
         (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
-        assertEq(collateralOut, 0);
-        assertEq(refundedInf, 10_000 * WAD);
-        assertEq(reserve.juniorSeries(), 2);
+        assertGt(collateralOut, 0);
+        assertEq(refundedInf, 0);
+        assertEq(reserve.juniorSeries(), 1);
+        assertEq(address(reserve.inf()), address(inf));
     }
 
     function testDebtFreeWithdrawalDoesNotNeedOracle() public {

@@ -28,6 +28,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     uint256 public constant MIN_INF_WITHDRAWAL_EPOCH = 1 hours;
     uint256 public constant MAX_INF_WITHDRAWAL_EPOCH = 7 days;
     uint256 public constant INF_SETTLEMENT_WINDOW = 1 days;
+    uint256 public constant MIN_RECOVERY_HALVING_PERIOD = 1 hours;
+    uint256 public constant MAX_RECOVERY_HALVING_PERIOD = 30 days;
 
     error ZeroAmount();
     error ZeroAddress();
@@ -42,7 +44,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     error UnsupportedTransferFee();
     error RecapitalizationRequired();
     error NotInsolvent();
-    error InsufficientRecapitalization();
     error WithdrawalNotReady();
     error WithdrawalWindowClosed();
     error WithdrawalNotExpired();
@@ -62,9 +63,21 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     IERC20 public immutable collateral;
     IReserveOracle public oracle;
     NaNToken public immutable nan;
-    /// @notice Active junior token. A recapitalization retires the old series and replaces this address.
-    INFToken public inf;
-    uint256 public juniorSeries;
+    /// @notice Permanent junior token; recapitalization dilutes, never replaces, existing INF.
+    INFToken public immutable inf;
+    /// @notice Legacy withdrawal namespace, permanently fixed at one (not a token version).
+    uint256 public constant juniorSeries = 1;
+
+    struct Recovery {
+        uint256 startedAt;
+        uint256 initialPriceUsd;
+        uint256 halvingPeriod;
+        uint256 exitDebtRatioBps;
+    }
+
+    /// @notice Pricing episode, active when initialPriceUsd != 0; independent of reported solvency.
+    Recovery public recovery;
+    uint256 public recoveryHalvingPeriod = 1 days;
 
     /// @notice Debt / reserve bounds in basis points, ordered min < target < max.
     uint256 public minDebtRatioBps;
@@ -93,7 +106,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 infAmount;
     }
 
-    /// @notice Withdrawal epochs are scoped to an INF series so recapitalization cannot revive retired claims.
+    /// @notice The series namespace is retained for client compatibility and always equals one.
     mapping(uint256 series => mapping(uint256 epoch => WithdrawalEpoch)) public withdrawalEpochs;
     mapping(uint256 series => mapping(uint256 epoch => mapping(address account => WithdrawalRequest))) public
         withdrawalRequests;
@@ -121,15 +134,11 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         address indexed caller, address indexed recipient, uint256 nanIn, uint256 collateralOut, uint256 feeUsd
     );
     event Recapitalized(
-        address indexed caller,
-        address indexed recipient,
-        address indexed retiredInf,
-        address newInf,
-        uint256 collateralIn,
-        uint256 shortfallUsd,
-        uint256 infOut,
-        uint256 juniorSeries
+        address indexed caller, address indexed recipient, uint256 collateralIn, uint256 shortfallUsd, uint256 infOut
     );
+    event RecoveryStarted(uint256 initialPriceUsd, uint256 halvingPeriod, uint256 exitDebtRatioBps);
+    event RecoveryEnded();
+    event RecoveryHalvingPeriodUpdated(uint256 previousPeriod, uint256 newPeriod);
     event OracleUpdated(address indexed previousOracle, address indexed newOracle);
     event DebtRatiosUpdated(uint256 minDebtRatioBps, uint256 targetDebtRatioBps, uint256 maxDebtRatioBps);
     event FeesUpdated(uint256 mintFeeBps, uint256 redeemFeeBps);
@@ -158,7 +167,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         nan = new NaNToken(address(this));
         inf = new INFToken(address(this));
-        juniorSeries = 1;
     }
 
     /// @notice Rotate the full oracle router, including primary feed and fallback configuration.
@@ -172,6 +180,16 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     function setFees(uint256 mintBps, uint256 redeemBps) external onlyOwner {
         _setFees(mintBps, redeemBps);
+    }
+
+    /// @notice Set decay speed for future recovery episodes only.
+    function setRecoveryHalvingPeriod(uint256 newPeriod) external onlyOwner {
+        if (newPeriod < MIN_RECOVERY_HALVING_PERIOD || newPeriod > MAX_RECOVERY_HALVING_PERIOD) {
+            revert InvalidConfiguration();
+        }
+        uint256 previousPeriod = recoveryHalvingPeriod;
+        recoveryHalvingPeriod = newPeriod;
+        emit RecoveryHalvingPeriodUpdated(previousPeriod, newPeriod);
     }
 
     /// @notice Change the delay for future cohorts only; requests already in a cohort are unaffected.
@@ -352,15 +370,61 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         return reserve >= maxReserve ? 0 : maxReserve - reserve;
     }
 
+    /// @notice Effective issuance floor after a fresh primary observation; zero outside recovery pricing.
+    /// @dev This view does not persist an observation or start the clock.
+    function recoveryFloorPriceUsd() public view returns (uint256) {
+        return _decayedFloor(_recoveryAt(reserveUsd(), debtUsd(), inf.totalSupply()));
+    }
+
+    /// @notice Marginal funding price, rounded up; NOT a redemption price or guaranteed market value.
+    function fundingPriceUsd() external view returns (uint256) {
+        uint256 supply = inf.totalSupply();
+        if (supply == 0) return WAD;
+        uint256 reserve = reserveUsd();
+        uint256 debt = debtUsd();
+        uint256 equity = reserve > debt ? reserve - debt : 0;
+        uint256 floor = _decayedFloor(_recoveryAt(reserve, debt, supply));
+        return Math.max(floor, Math.mulDiv(equity, WAD, supply, Math.Rounding.Ceil));
+    }
+
+    /// @notice Quote same-token issuance using the current primary price, state and timestamp.
+    function previewFund(uint256 collateralIn) external view returns (uint256) {
+        if (collateralIn == 0) revert ZeroAmount();
+        uint256 price = collateralPriceUsd();
+        uint256 reserve = _collateralToUsd(reserveCollateral(), price);
+        uint256 debt = debtUsd();
+        uint256 supply = inf.totalSupply();
+        _checkFundingCap(collateralIn, price, debt);
+        return _fundingQuote(
+            _collateralToUsd(collateralIn, price),
+            reserve,
+            debt,
+            supply,
+            _decayedFloor(_recoveryAt(reserve, debt, supply))
+        );
+    }
+
+    /// @notice Permissionless primary-only observation. Cannot prove continuous distress between calls.
+    function checkpointRecovery() external nonReentrant {
+        _syncRecovery(reserveUsd(), debtUsd(), inf.totalSupply());
+    }
+
     // -------------------------------------------------------------------------
     // State transitions
     // -------------------------------------------------------------------------
 
-    /// @notice Add junior capital and mint INF at current residual NAV.
-    /// @dev Initial INF starts at $1. Use recapitalize() at zero equity so underwater INF is not subsidized.
+    /// @notice Add junior capital at the greater of real NAV and the recovery issuance floor.
+    /// @dev Partial funding is allowed even at zero equity. Existing INF shares are never retired.
     function fund(uint256 collateralIn, uint256 minInfOut, address recipient)
         external
         nonReentrant
+        returns (uint256 infOut)
+    {
+        return _fund(collateralIn, minInfOut, recipient, false);
+    }
+
+    function _fund(uint256 collateralIn, uint256 minInfOut, address recipient, bool insolventOnly)
+        internal
         returns (uint256 infOut)
     {
         if (collateralIn == 0) revert ZeroAmount();
@@ -370,28 +434,21 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
         uint256 debt = debtUsd();
         uint256 infSupply = inf.totalSupply();
-        uint256 usdIn = _collateralToUsd(collateralIn, price);
-        if (
-            debt != 0
-                && _collateralToUsd(reserveCollateral() + collateralIn, price) > Math.mulDiv(debt, BPS, minDebtRatioBps)
-        ) {
-            revert DebtRatioTooLow();
+        if (insolventOnly && (reserveBefore > debt || infSupply == 0)) {
+            revert NotInsolvent();
         }
-
-        if (infSupply == 0) {
-            if (debt != 0) revert RecapitalizationRequired();
-            infOut = usdIn; // bootstrap at $1 per INF
-        } else {
-            if (reserveBefore <= debt) revert RecapitalizationRequired();
-            uint256 equityBefore = reserveBefore - debt;
-            infOut = Math.mulDiv(usdIn, infSupply, equityBefore);
-        }
-
+        _checkFundingCap(collateralIn, price, debt);
+        _syncRecovery(reserveBefore, debt, infSupply);
+        infOut = _fundingQuote(
+            _collateralToUsd(collateralIn, price), reserveBefore, debt, infSupply, _decayedFloor(recovery)
+        );
         if (infOut == 0 || infOut < minInfOut) revert Slippage();
         _pullExact(collateralIn);
         inf.mint(recipient, infOut);
+        _syncRecovery(_collateralToUsd(reserveCollateral(), price), debt, inf.totalSupply());
 
         emit Funded(msg.sender, recipient, collateralIn, infOut);
+        if (insolventOnly) emit Recapitalized(msg.sender, recipient, collateralIn, debt - reserveBefore, infOut);
     }
 
     /// @notice Lock active INF for a withdrawal. No collateral amount is fixed at request time.
@@ -501,6 +558,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 price = collateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
         uint256 debtBefore = debtUsd();
+        _syncRecovery(reserveBefore, debtBefore, inf.totalSupply());
         uint256 usdIn = _collateralToUsd(collateralIn, price);
         uint256 feeUsd = Math.mulDiv(usdIn, mintFeeBps, BPS);
         nanOut = usdIn - feeUsd;
@@ -512,6 +570,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         _pullExact(collateralIn);
         nan.mint(recipient, nanOut);
+        _syncRecovery(_collateralToUsd(reserveCollateral(), price), debtAfter, inf.totalSupply());
 
         emit Minted(msg.sender, recipient, collateralIn, nanOut, feeUsd);
     }
@@ -529,8 +588,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         uint256 debtBefore = debtUsd();
         if (debtBefore == 0) revert NoDebt();
-        (uint256 price,) = redemptionCollateralPriceUsd();
+        (uint256 price, bool fallbackUsed) = redemptionCollateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
+        if (!fallbackUsed) _syncRecovery(reserveBefore, debtBefore, inf.totalSupply());
 
         uint256 redemptionPrice = reserveBefore >= debtBefore ? WAD : Math.mulDiv(reserveBefore, WAD, debtBefore);
         uint256 grossUsdOut = Math.mulDiv(nanIn, redemptionPrice, WAD);
@@ -546,35 +606,28 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         nan.burn(msg.sender, nanIn);
         collateral.safeTransfer(recipient, collateralOut);
+        if (!fallbackUsed) {
+            _syncRecovery(_collateralToUsd(reserveCollateral(), price), debtUsd(), inf.totalSupply());
+        }
 
         emit Redeemed(msg.sender, recipient, nanIn, collateralOut, feeUsd);
     }
 
-    /// @notice Restore an insolvent reserve and replace the wiped-out junior token with a fresh series.
-    /// @dev For outstanding NaN debt, the deposit must restore the configured target debt ratio.
-    ///      New INF represents the post-recapitalization residual equity dollar-for-dollar. Retiring the
-    ///      old INF series prevents underwater holders from receiving a windfall funded by the recapitalizer.
+    /// @notice Insolvency-only convenience entry point for same-token, incremental funding.
+    /// @dev Same quote as fund(); no minimum target-restoring deposit and no old-share cancellation.
     function recapitalize(uint256 collateralIn, uint256 minInfOut, address recipient)
         external
         nonReentrant
         returns (uint256 infOut)
     {
-        if (collateralIn == 0) revert ZeroAmount();
-        if (recipient == address(0)) revert ZeroAddress();
-
-        uint256 shortfallUsd;
-        (shortfallUsd, infOut) = _recapitalizationQuote(collateralIn);
-        if (infOut < minInfOut) revert Slippage();
-
-        _pullExact(collateralIn);
-        _replaceJuniorSeries(recipient, collateralIn, shortfallUsd, infOut);
+        return _fund(collateralIn, minInfOut, recipient, true);
     }
 
     // -------------------------------------------------------------------------
     // Internal math
     // -------------------------------------------------------------------------
 
-    function _withdrawalQuote(uint256 requestedInf) internal view returns (uint256 filledInf, uint256 collateralOut) {
+    function _withdrawalQuote(uint256 requestedInf) internal returns (uint256 filledInf, uint256 collateralOut) {
         uint256 supply = inf.totalSupply(); // Includes INF locked by all unsettled cohorts.
         uint256 reserve = reserveCollateral();
         uint256 debt = debtUsd();
@@ -587,6 +640,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         uint256 price = collateralPriceUsd();
         uint256 reserveValue = _collateralToUsd(reserve, price);
+        _syncRecovery(reserveValue, debt, supply);
         if (reserveValue <= debt) return (0, 0);
 
         uint256 minimumReserveUsd = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
@@ -606,53 +660,72 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         }
     }
 
-    function _recapitalizationQuote(uint256 collateralIn) internal view returns (uint256 shortfallUsd, uint256 infOut) {
-        uint256 price = collateralPriceUsd();
-        uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
-        uint256 debt = debtUsd();
-        if (reserveBefore > debt || (debt == 0 && inf.totalSupply() == 0)) revert NotInsolvent();
-
-        shortfallUsd = debt - reserveBefore;
-        uint256 usdIn = _collateralToUsd(collateralIn, price);
-        uint256 requiredReserve;
-        if (debt != 0) {
-            requiredReserve = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
-        }
-
-        uint256 requiredUsdIn = requiredReserve > reserveBefore ? requiredReserve - reserveBefore : 0;
-        if (usdIn < requiredUsdIn) revert InsufficientRecapitalization();
+    function _checkFundingCap(uint256 collateralIn, uint256 price, uint256 debt) internal view {
         if (
             debt != 0
                 && _collateralToUsd(reserveCollateral() + collateralIn, price) > Math.mulDiv(debt, BPS, minDebtRatioBps)
         ) {
             revert DebtRatioTooLow();
         }
-
-        infOut = reserveBefore + usdIn - debt;
-        if (infOut == 0) revert Slippage();
     }
 
-    function _replaceJuniorSeries(address recipient, uint256 collateralIn, uint256 shortfallUsd, uint256 infOut)
+    function _fundingQuote(uint256 usdIn, uint256 reserve, uint256 debt, uint256 supply, uint256 floor)
         internal
+        pure
+        returns (uint256)
     {
-        INFToken retiredInf = inf;
-        INFToken newInf = new INFToken(address(this));
-        inf = newInf;
-        unchecked {
-            ++juniorSeries;
+        if (supply == 0) {
+            if (debt != 0) revert RecapitalizationRequired();
+            return usdIn;
         }
-        newInf.mint(recipient, infOut);
+        uint256 equity = reserve > debt ? reserve - debt : 0;
+        if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
+            return Math.mulDiv(usdIn, WAD, floor);
+        }
+        // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
+        return Math.mulDiv(usdIn, supply, equity);
+    }
 
-        emit Recapitalized(
-            msg.sender,
-            recipient,
-            address(retiredInf),
-            address(newInf),
-            collateralIn,
-            shortfallUsd,
-            infOut,
-            juniorSeries
-        );
+    function _recoveryAt(uint256 reserve, uint256 debt, uint256 supply) internal view returns (Recovery memory next) {
+        next = recovery;
+        if (supply == 0) return Recovery(0, 0, 0, 0);
+        if (next.initialPriceUsd != 0) {
+            uint256 equity = reserve > debt ? reserve - debt : 0;
+            if (
+                _withinDebtRatio(debt, reserve, next.exitDebtRatioBps)
+                    && Math.mulDiv(equity, WAD, supply) >= _decayedFloor(next)
+            ) return Recovery(0, 0, 0, 0);
+        } else if (!_withinMaxDebtRatio(debt, reserve) || reserve == 0) {
+            // Price at the max-ratio boundary, not the potentially near-zero crash NAV.
+            uint256 boundaryEquity = Math.mulDiv(debt, BPS - maxDebtRatioBps, maxDebtRatioBps, Math.Rounding.Ceil);
+            uint256 initialPrice =
+                debt == 0 ? WAD : Math.max(1, Math.mulDiv(boundaryEquity, WAD, supply, Math.Rounding.Ceil));
+            next = Recovery(block.timestamp, initialPrice, recoveryHalvingPeriod, targetDebtRatioBps);
+        }
+    }
+
+    function _syncRecovery(uint256 reserve, uint256 debt, uint256 supply) internal {
+        Recovery memory next = _recoveryAt(reserve, debt, supply);
+        if (recovery.initialPriceUsd == 0 && next.initialPriceUsd != 0) {
+            recovery = next;
+            emit RecoveryStarted(next.initialPriceUsd, next.halvingPeriod, next.exitDebtRatioBps);
+        } else if (recovery.initialPriceUsd != 0 && next.initialPriceUsd == 0) {
+            delete recovery;
+            emit RecoveryEnded();
+        }
+    }
+
+    function _decayedFloor(Recovery memory episode) internal view returns (uint256) {
+        if (episode.initialPriceUsd == 0) return 0;
+        uint256 elapsed = block.timestamp - episode.startedAt;
+        uint256 halvings = elapsed / episode.halvingPeriod;
+        if (halvings >= 256) return 1;
+        uint256 upper = episode.initialPriceUsd >> halvings;
+        uint256 twicePeriod = 2 * episode.halvingPeriod;
+        return
+            Math.max(
+                1, Math.mulDiv(upper, twicePeriod - elapsed % episode.halvingPeriod, twicePeriod, Math.Rounding.Ceil)
+            );
     }
 
     function _collateralToUsd(uint256 collateralAmount, uint256 price) internal pure returns (uint256) {
