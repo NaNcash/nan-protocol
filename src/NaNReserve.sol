@@ -700,7 +700,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
             uint256 boundaryEquity = Math.mulDiv(debt, BPS - maxDebtRatioBps, maxDebtRatioBps, Math.Rounding.Ceil);
             uint256 initialPrice =
                 debt == 0 ? WAD : Math.max(1, Math.mulDiv(boundaryEquity, WAD, supply, Math.Rounding.Ceil));
-            next = Recovery(block.timestamp, initialPrice, recoveryHalvingPeriod, targetDebtRatioBps);
+            // A return to the healthy band ends an observed crash once real NAV
+            // has caught up to the floor. The NAV check prevents a split deposit
+            // from making its second tranche cheaper at the ratio boundary.
+            next = Recovery(block.timestamp, initialPrice, recoveryHalvingPeriod, maxDebtRatioBps);
         }
     }
 

@@ -53,7 +53,7 @@ contract InfRecoveryTest is Test {
         (uint256 startedAt,, uint256 period, uint256 exitRatio) = reserve.recovery();
         assertEq(startedAt, block.timestamp);
         assertEq(period, 1 days);
-        assertEq(exitRatio, 6_450);
+        assertEq(exitRatio, 6_500);
     }
 
     function testViewsDoNotStartDecayClock() public {
@@ -117,6 +117,32 @@ contract InfRecoveryTest is Test {
         assertEq(inf.balanceOf(ALICE), inf.totalSupply());
         assertEq(reserve.recoveryFloorPriceUsd(), 0);
         assertEq(reserve.equityUsd(), 300_540 * WAD);
+    }
+
+    function testReboundBetweenTargetAndMaxResetsEpisodeBeforeNextCrash() public {
+        reserve.setDebtRatios(5_000, 5_500, 6_500);
+        assertGt(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
+        assertLe(reserve.debtRatioBps(), reserve.maxDebtRatioBps());
+
+        _crash();
+        (uint256 firstStart, uint256 firstFloor,,) = reserve.recovery();
+        vm.warp(block.timestamp + 10 days);
+
+        // The reserve has returned to the same healthy state as before the crash,
+        // although its debt ratio is still above the withdrawal target.
+        oracle.setPrice(3_000 * WAD);
+        assertGt(reserve.infPriceUsd(), reserve.recoveryFloorPriceUsd());
+        reserve.checkpointRecovery();
+        (, uint256 endedFloor,,) = reserve.recovery();
+        assertEq(endedFloor, 0);
+
+        // A later crash must get a fresh floor, not the ten-day-old decayed one.
+        oracle.setPrice(1_500 * WAD);
+        reserve.checkpointRecovery();
+        (uint256 secondStart, uint256 secondFloor,,) = reserve.recovery();
+        assertGt(secondStart, firstStart);
+        assertEq(secondFloor, firstFloor);
+        assertEq(reserve.recoveryFloorPriceUsd(), firstFloor);
     }
 
     function testNewEpisodeStartsFreshAfterObservedRecovery() public {
@@ -263,7 +289,7 @@ contract InfRecoveryTest is Test {
         reserve.checkpointRecovery();
         (,, newPeriod, newExit) = reserve.recovery();
         assertEq(newPeriod, 7 days);
-        assertEq(newExit, 5_000);
+        assertEq(newExit, 6_000);
     }
 
     function testHalvingConfigurationRequiresAuthorizerAndBounds() public {
