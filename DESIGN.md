@@ -81,7 +81,7 @@ boundaryEquity = ceil(D * (BPS - max) / max)
 P0 = max(1, ceil(boundaryEquity * WAD / S))
 ```
 
-`P0`, start time, halving interval `T`, and target exit ratio are snapshotted. The floor is a fixed per-share USD price for the episode, independent of later deposits. By default `T = 1 day`; the authorizer may configure one hour through 30 days for future episodes. This interval is unrelated to the three-day withdrawal delay.
+`P0`, start time, halving interval `T`, and maximum-ratio exit threshold are snapshotted. The floor is a fixed per-share USD price for the episode, independent of later deposits. By default `T = 1 day`; the authorizer may configure one hour through 30 days for future episodes. This interval is unrelated to the three-day withdrawal delay.
 
 ```text
 n = floor(elapsed / T)
@@ -91,7 +91,7 @@ Pfloor = max(1, ceil((P0 >> n) * (2*T - u) / (2*T)))
 
 For `n >= 256`, the floor is one price wei. The schedule linearly interpolates between halvings; it is not a custom exponential approximation. Full-precision arithmetic uses OpenZeppelin Math. While the floor exceeds real NAV, `infOut = floor(usdIn * WAD / Pfloor)`; otherwise `infOut = floor(usdIn * S / E)`. New capital first fills any senior deficit, so its immediate junior NAV can be less than its purchase price, including zero. The issuance floor never changes actual senior liabilities, reserve valuation, INF NAV, or withdrawal entitlements.
 
-An episode clears on a fresh observation only if the debt ratio is at/below its snapshotted target AND real NAV has caught up to the remaining floor, or INF supply is zero. Thus restoration of a safe ratio can precede the end of recovery pricing. Removing a binding floor immediately at the ratio boundary would reward splitting one deposit into two; retaining it avoids that price discontinuity. Repeated distress while an episode remains active does not restart its clock. A new breach after an observed completed recovery starts a new episode.
+An episode clears on a fresh observation only if the debt ratio is at/below its snapshotted maximum AND real NAV has caught up to the remaining floor, or INF supply is zero. A healthy rebound between the target and maximum therefore resets the decay clock; it need not reach the withdrawal target. Restoration of a safe ratio can still precede the end of recovery pricing when real NAV remains below the floor. Removing a binding floor immediately at the ratio boundary would reward splitting one deposit into two; retaining it avoids that price discontinuity. Repeated distress while an episode remains active does not restart its clock. A new breach after an observed completed recovery starts a new episode.
 
 Ignoring rounding, a deposit `C` at a binding price `P` changes NAV to `(R + C - D) / (S + C/P)` once solvent. If pre-deposit NAV is below `P`, post-deposit NAV remains below `P`; otherwise exact-NAV funding preserves NAV. Consequently, at a fixed timestamp/oracle price, splitting a deposit cannot access a lower second-tranche price through the funding operation itself. Solidity fuzz tests also check integer rounding and crossing the target boundary. This does not remove the economic incentive to wait for time decay.
 

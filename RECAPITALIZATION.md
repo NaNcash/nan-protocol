@@ -22,9 +22,10 @@ It is an economic-design draft, not a production-ready or audited release.
   The floor is only an issuance price, never a collateral valuation, senior debt
   adjustment, guaranteed market price, or INF withdrawal entitlement.
 - An episode ends only when the observed debt ratio is at/below its snapshotted
-  target AND real NAV is at least the remaining floor (or INF supply is zero).
+  maximum AND real NAV is at least the remaining floor (or INF supply is zero).
   This avoids dropping the price below its floor just because a small deposit
-  crosses a ratio boundary, which would reward splitting a deposit.
+  crosses a ratio boundary, which would reward splitting a deposit. A rebound
+  into the healthy band resets the clock even if the withdrawal target is not met.
 - The interval and exit ratio are snapshotted. Parameter changes affect future
   episodes, never rewrite an existing episode's clock or initial price.
 
