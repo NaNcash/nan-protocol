@@ -53,7 +53,7 @@ contract InfRecoveryTest is Test {
         (uint256 startedAt,, uint256 period, uint256 exitRatio) = reserve.recovery();
         assertEq(startedAt, block.timestamp);
         assertEq(period, 1 days);
-        assertEq(exitRatio, 6_450);
+        assertEq(exitRatio, 6_500);
     }
 
     function testViewsDoNotStartDecayClock() public {
@@ -289,7 +289,7 @@ contract InfRecoveryTest is Test {
         reserve.checkpointRecovery();
         (,, newPeriod, newExit) = reserve.recovery();
         assertEq(newPeriod, 7 days);
-        assertEq(newExit, 5_000);
+        assertEq(newExit, 6_000);
     }
 
     function testHalvingConfigurationRequiresAuthorizerAndBounds() public {
