@@ -298,7 +298,7 @@ contract InfWithdrawalTest is Test {
         (uint256 series, uint256 epoch) = reserve.requestDefund(10_000 * WAD);
         oracle.setPrice(1_500 * WAD);
         vm.prank(BOB);
-        reserve.recapitalize(278 * WAD, 0, BOB);
+        reserve.fund(278 * WAD, 0, BOB);
         oracle.setPrice(3_000 * WAD);
 
         vm.warp(reserve.withdrawalMaturity(series, epoch));

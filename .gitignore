@@ -2,3 +2,7 @@ out/
 cache/
 broadcast/
 .env
+ui/node_modules/
+ui/dist/
+ui/public/local-deployment.json
+.anvil/

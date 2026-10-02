@@ -72,7 +72,7 @@ This preserves the reserve/debt ratio across redemptions, apart from conservativ
 
 ### Recovery issuance and recapitalization
 
-INF has one immutable address and recapitalization never cancels old balances. `fund` can accept incremental capital during stress or insolvency. `recapitalize` is an insolvency-only convenience wrapper using exactly the same quote, requiring existing INF supply. Neither requires a single deposit to restore the target ratio. All funding still obeys the minimum debt-ratio cap.
+INF has one immutable address and recapitalization never cancels old balances. `fund` is the sole INF deposit entry point and accepts incremental capital during stress or insolvency. A single deposit need not restore the target ratio. All funding still obeys the minimum debt-ratio cap.
 
 A primary observation of `D/R > max` begins a pricing episode before equity reaches zero. Its initial USD/INF floor is the NAV at the maximum-ratio boundary, rounded up:
 
@@ -115,7 +115,7 @@ On primary failure, only NaN redemption can call the configured Uniswap v3 fallb
 
 Each router applies its configured upward premium to the fallback quote. This pays less collateral per redeemed NaN and protects the reserve from modestly low fallback valuations; it cannot make manipulated TWAPs or a USDC premium safe. The two pools can lose liquidity or migrate over the protocol's lifetime; the authorizer may deploy and select a replacement router.
 
-Minting, funding, debt-bearing INF settlement, and recapitalization require the primary. INF withdrawal requests, claims, expirations, and debt-free settlement do not. The reserve's ordinary health and NAV views also require the primary, while `nanRedemptionPriceUsd()` and `redemptionCollateralPriceUsd()` follow the actual redemption path. If both sources are unavailable, redemption fails closed.
+Minting, funding (including during insolvency), and debt-bearing INF settlement require the primary. INF withdrawal requests, claims, expirations, and debt-free settlement do not. The reserve's ordinary health and NAV views also require the primary, while `nanRedemptionPriceUsd()` and `redemptionCollateralPriceUsd()` follow the actual redemption path. If both sources are unavailable, redemption fails closed.
 
 ## Governance and trust model
 
@@ -141,5 +141,5 @@ Before a real deployment accepts NaN minting:
 3. Select parameters using stress tests rather than the repository defaults.
 4. Seed a publicly disclosed INF buffer large enough for the intended NaN issuance.
 5. Publish verified source, deployment transactions, contract addresses, and monitoring.
-6. Ensure integrators distinguish issuance price from actual NAV, understand dilution, checkpoint recovery observations, and use the revised recapitalization event ABI.
+6. Ensure integrators distinguish issuance price from actual NAV, understand dilution, checkpoint recovery observations, and use `fund` for all INF deposits.
 7. Deploy and verify a timelocked authorizer, and rehearse oracle-router rotation and parameter changes.

@@ -70,7 +70,7 @@ contract WstEthUsdOracle is IReserveOracle {
         stEthUsdFeedDecimals = feedDecimals;
     }
 
-    /// @notice Primary price for minting, funding, defunding, recapitalization, and ordinary reserve views.
+    /// @notice Primary price for minting, funding, defunding, and ordinary reserve views.
     function price() external view returns (uint256 wstEthUsd) {
         uint256 stEthUsd = _readFeed(stEthUsdFeed, stEthUsdFeedDecimals);
         uint256 stEthPerWstEth = wstETH.stEthPerToken();

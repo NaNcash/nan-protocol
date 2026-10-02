@@ -286,7 +286,7 @@ contract NaNReserveTest is Test {
         reserve.redeem(nanBalance, 0, BOB);
         uint256 quoted = reserve.previewFund(10 * WAD);
         vm.prank(BOB);
-        uint256 infOut = reserve.recapitalize(10 * WAD, quoted, BOB);
+        uint256 infOut = reserve.fund(10 * WAD, quoted, BOB);
 
         assertEq(infOut, quoted);
         assertEq(address(reserve.inf()), originalInf);
@@ -296,10 +296,11 @@ contract NaNReserveTest is Test {
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.NoDebt));
     }
 
-    function testFreshEmptyReserveUsesFundRatherThanRecapitalize() public {
+    function testFreshEmptyReserveCanBeFunded() public {
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.NotInsolvent.selector);
-        reserve.recapitalize(10 * WAD, 0, ALICE);
+        uint256 infOut = reserve.fund(10 * WAD, 0, ALICE);
+        assertEq(infOut, 30_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), infOut);
     }
 
     function testOrdinaryFundingUsesRecoveryFloorWhenUnderwater() public {
@@ -322,7 +323,7 @@ contract NaNReserveTest is Test {
 
         uint256 quote = reserve.previewFund(278 * WAD);
         vm.prank(BOB);
-        uint256 infOut = reserve.recapitalize(278 * WAD, quote, BOB);
+        uint256 infOut = reserve.fund(278 * WAD, quote, BOB);
 
         INFToken newInf = reserve.inf();
         assertEq(address(newInf), originalInf);
@@ -341,7 +342,7 @@ contract NaNReserveTest is Test {
         oracle.setPrice(1_500 * WAD);
 
         vm.prank(ALICE);
-        reserve.recapitalize(1 * WAD, 0, ALICE);
+        reserve.fund(1 * WAD, 0, ALICE);
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Insolvent));
         assertEq(reserve.reserveUsd(), 421_500 * WAD);
         assertEq(reserve.debtUsd(), 539_460 * WAD);
@@ -354,21 +355,21 @@ contract NaNReserveTest is Test {
         uint256 quote = reserve.previewFund(278 * WAD);
         vm.prank(ALICE);
         vm.expectRevert(NaNReserve.Slippage.selector);
-        reserve.recapitalize(278 * WAD, quote + 1, ALICE);
+        reserve.fund(278 * WAD, quote + 1, ALICE);
     }
 
-    function testRecapitalizationOnlyDuringInsolvency() public {
+    function testFundingDoesNotRequireInsolvency() public {
         _bootstrapAndMint();
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.NotInsolvent.selector);
-        reserve.recapitalize(100 * WAD, 0, ALICE);
+        assertGt(reserve.fund(1 * WAD, 0, ALICE), 0);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Healthy));
     }
 
     function testOriginalInfCanWithdrawAfterRecapitalizationAndRecovery() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
         vm.prank(ALICE);
-        reserve.recapitalize(278 * WAD, 0, BOB);
+        reserve.fund(278 * WAD, 0, BOB);
 
         oracle.setPrice(3_000 * WAD);
         (uint256 series, uint256 epoch) = _requestAndSettle(1 * WAD);
@@ -416,8 +417,6 @@ contract NaNReserveTest is Test {
         reserve.requestDefund(0);
         vm.expectRevert(NaNReserve.ZeroAmount.selector);
         reserve.redeem(0, 0, ALICE);
-        vm.expectRevert(NaNReserve.ZeroAmount.selector);
-        reserve.recapitalize(0, 0, ALICE);
 
         vm.expectRevert(NaNReserve.ZeroAddress.selector);
         reserve.fund(1, 0, address(0));

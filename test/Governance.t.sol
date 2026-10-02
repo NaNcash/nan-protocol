@@ -192,15 +192,15 @@ contract GovernanceTest is Test {
         assertGt(reserve.maxFundableUsd(), 0);
     }
 
-    function testRecapitalizationAlsoRespectsMinimumRatio() public {
+    function testInsolventFundingAlsoRespectsMinimumRatio() public {
         _bootstrapAndMint();
         oracle.setPrice(1_500 * WAD);
         vm.prank(ALICE);
         vm.expectRevert(NaNReserve.DebtRatioTooLow.selector);
-        reserve.recapitalize(440 * WAD, 0, ALICE);
+        reserve.fund(440 * WAD, 0, ALICE);
 
         vm.prank(ALICE);
-        reserve.recapitalize(278 * WAD, 0, ALICE);
+        reserve.fund(278 * WAD, 0, ALICE);
         assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
         assertGe(reserve.debtRatioBps(), reserve.minDebtRatioBps());
     }
