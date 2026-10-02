@@ -5,8 +5,8 @@ It is an economic-design draft, not a production-ready or audited release.
 
 ## Proposed pricing
 
-- `fund` accepts incremental capital even with zero residual equity. `recapitalize`
-  remains an insolvency-only convenience entry point using the same pricing.
+- `fund` is the sole INF deposit entry point and accepts incremental capital even
+  with zero residual equity.
 - Bootstrap with no INF supply remains $1 per INF. Otherwise normal funding uses
   exact residual equity / supply (not a prematurely rounded per-token quote).
 - A fresh primary observation above the maximum debt ratio starts a pricing

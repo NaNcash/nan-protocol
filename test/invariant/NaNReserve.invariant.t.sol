@@ -41,7 +41,7 @@ contract NaNReserveHandler is Test {
     }
 
     function fund(uint96 rawAmount) external {
-        uint256 amount = bound(uint256(rawAmount), 1e12, 100 * WAD);
+        uint256 amount = bound(uint256(rawAmount), 1e12, 500 * WAD);
         try reserve.fund(amount, 0, address(this)) {} catch {}
     }
 
@@ -87,11 +87,6 @@ contract NaNReserveHandler is Test {
         if (balance == 0) return;
         uint256 amount = bound(uint256(rawAmount), 1, balance);
         try reserve.redeem(amount, 0, address(this)) {} catch {}
-    }
-
-    function recapitalize(uint96 rawAmount) external {
-        uint256 amount = bound(uint256(rawAmount), 1e12, 500 * WAD);
-        try reserve.recapitalize(amount, 0, address(this)) {} catch {}
     }
 
     function movePrice(uint96 rawPrice) external {
@@ -190,23 +185,22 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         handler.acceptOwnership();
         originalInf = address(reserve.inf());
 
-        bytes4[] memory selectors = new bytes4[](16);
+        bytes4[] memory selectors = new bytes4[](15);
         selectors[0] = handler.fund.selector;
         selectors[1] = handler.mint.selector;
         selectors[2] = handler.requestDefund.selector;
         selectors[3] = handler.redeem.selector;
-        selectors[4] = handler.recapitalize.selector;
-        selectors[5] = handler.movePrice.selector;
-        selectors[6] = handler.processWithdrawal.selector;
-        selectors[7] = handler.advanceAndCheckpoint.selector;
-        selectors[8] = handler.setDebtRatios.selector;
-        selectors[9] = handler.setFees.selector;
-        selectors[10] = handler.setWithdrawalDelay.selector;
-        selectors[11] = handler.setWithdrawalEpoch.selector;
-        selectors[12] = handler.setRecoveryHalvingPeriod.selector;
-        selectors[13] = handler.swapOracle.selector;
-        selectors[14] = handler.crash.selector;
-        selectors[15] = handler.recover.selector;
+        selectors[4] = handler.movePrice.selector;
+        selectors[5] = handler.processWithdrawal.selector;
+        selectors[6] = handler.advanceAndCheckpoint.selector;
+        selectors[7] = handler.setDebtRatios.selector;
+        selectors[8] = handler.setFees.selector;
+        selectors[9] = handler.setWithdrawalDelay.selector;
+        selectors[10] = handler.setWithdrawalEpoch.selector;
+        selectors[11] = handler.setRecoveryHalvingPeriod.selector;
+        selectors[12] = handler.swapOracle.selector;
+        selectors[13] = handler.crash.selector;
+        selectors[14] = handler.recover.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
@@ -237,7 +231,7 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         handler.crash();
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Insolvent));
         uint256 infBeforeRecap = reserve.inf().totalSupply();
-        handler.recapitalize(uint96(10 * WAD));
+        handler.fund(uint96(10 * WAD));
         assertGt(reserve.inf().totalSupply(), infBeforeRecap);
         handler.advanceAndCheckpoint(uint32(2 days));
         handler.recover();

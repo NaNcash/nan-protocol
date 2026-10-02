@@ -42,8 +42,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     error NoJuniorCapital();
     error Slippage();
     error UnsupportedTransferFee();
-    error RecapitalizationRequired();
-    error NotInsolvent();
     error WithdrawalNotReady();
     error WithdrawalWindowClosed();
     error WithdrawalNotExpired();
@@ -132,9 +130,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     );
     event Redeemed(
         address indexed caller, address indexed recipient, uint256 nanIn, uint256 collateralOut, uint256 feeUsd
-    );
-    event Recapitalized(
-        address indexed caller, address indexed recipient, uint256 collateralIn, uint256 shortfallUsd, uint256 infOut
     );
     event RecoveryStarted(uint256 initialPriceUsd, uint256 halvingPeriod, uint256 exitDebtRatioBps);
     event RecoveryEnded();
@@ -420,13 +415,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         nonReentrant
         returns (uint256 infOut)
     {
-        return _fund(collateralIn, minInfOut, recipient, false);
-    }
-
-    function _fund(uint256 collateralIn, uint256 minInfOut, address recipient, bool insolventOnly)
-        internal
-        returns (uint256 infOut)
-    {
         if (collateralIn == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
 
@@ -434,9 +422,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
         uint256 debt = debtUsd();
         uint256 infSupply = inf.totalSupply();
-        if (insolventOnly && (reserveBefore > debt || infSupply == 0)) {
-            revert NotInsolvent();
-        }
         _checkFundingCap(collateralIn, price, debt);
         _syncRecovery(reserveBefore, debt, infSupply);
         infOut = _fundingQuote(
@@ -448,7 +433,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         _syncRecovery(_collateralToUsd(reserveCollateral(), price), debt, inf.totalSupply());
 
         emit Funded(msg.sender, recipient, collateralIn, infOut);
-        if (insolventOnly) emit Recapitalized(msg.sender, recipient, collateralIn, debt - reserveBefore, infOut);
     }
 
     /// @notice Lock active INF for a withdrawal. No collateral amount is fixed at request time.
@@ -613,16 +597,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         emit Redeemed(msg.sender, recipient, nanIn, collateralOut, feeUsd);
     }
 
-    /// @notice Insolvency-only convenience entry point for same-token, incremental funding.
-    /// @dev Same quote as fund(); no minimum target-restoring deposit and no old-share cancellation.
-    function recapitalize(uint256 collateralIn, uint256 minInfOut, address recipient)
-        external
-        nonReentrant
-        returns (uint256 infOut)
-    {
-        return _fund(collateralIn, minInfOut, recipient, true);
-    }
-
     // -------------------------------------------------------------------------
     // Internal math
     // -------------------------------------------------------------------------
@@ -675,7 +649,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         returns (uint256)
     {
         if (supply == 0) {
-            if (debt != 0) revert RecapitalizationRequired();
+            if (debt != 0) revert NoJuniorCapital();
             return usdIn;
         }
         uint256 equity = reserve > debt ? reserve - debt : 0;
