@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NaN Local Lab</title>
+    <meta name="description" content="Local Anvil playground for NaN and INF." />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-icon">N</span><span>NaN <small>LOCAL LAB</small></span></div>
+        <div class="header-actions"><span class="network">● Anvil · 31337</span><button id="connect" type="button">Connect wallet</button></div>
+      </header>
+
+      <main>
+        <section class="hero">
+          <p class="eyebrow">A safe place to break things</p>
+          <h1>Explore the reserve.</h1>
+          <p>Mint a pretend wstETH balance, fund INF, issue NaN, simulate a crash, and settle a withdrawal. These contracts and balances exist only on your local Anvil chain.</p>
+          <div class="hero-meta"><span id="chain-status">Checking local deployment…</span><span id="wallet-label">Wallet not connected</span></div>
+        </section>
+
+        <div id="notice" class="notice" role="status" aria-live="polite">Start Anvil and run the local deployment command to begin.</div>
+
+        <section class="section">
+          <div class="section-heading"><h2>Reserve pulse</h2><button id="refresh" type="button" class="text-button">Refresh ↻</button></div>
+          <div class="metrics">
+            <div class="metric"><span>Collateral price</span><strong id="collateral-price">—</strong><small>USD / wstETH · primary</small></div>
+            <div class="metric"><span>Backing</span><strong id="reserve-usd">—</strong><small>Reserve value</small></div>
+            <div class="metric"><span>NaN debt</span><strong id="debt-usd">—</strong><small>Outstanding supply</small></div>
+            <div class="metric"><span>Debt ratio</span><strong id="debt-ratio">—</strong><small id="health">Health unavailable</small></div>
+            <div class="metric"><span>INF NAV</span><strong id="inf-nav">—</strong><small>Real residual value</small></div>
+            <div class="metric"><span>INF issuance</span><strong id="funding-price">—</strong><small>May exceed NAV in recovery</small></div>
+          </div>
+          <div class="balances"><span>Your wallet</span><span>ETH <strong id="eth-balance">—</strong></span><span>wstETH <strong id="collateral-balance">—</strong></span><span>NaN <strong id="nan-balance">—</strong></span><span>INF <strong id="inf-balance">—</strong></span></div>
+        </section>
+
+        <section class="section">
+          <div class="section-heading"><h2>Local tokens</h2><p>These addresses are for this Anvil deployment only. Add each token to MetaMask on chain 31337.</p></div>
+          <div class="token-grid">
+            <div class="token-card"><span>Local wstETH <small id="token-symbol-collateral">—</small></span><code id="token-address-collateral">Loading deployment…</code><div class="inline-actions"><button id="copy-collateral" type="button" class="secondary">Copy address</button><button id="watch-collateral" type="button">Add to MetaMask</button></div></div>
+            <div class="token-card"><span>NaN <small id="token-symbol-nan">—</small></span><code id="token-address-nan">Loading deployment…</code><div class="inline-actions"><button id="copy-nan" type="button" class="secondary">Copy address</button><button id="watch-nan" type="button">Add to MetaMask</button></div></div>
+            <div class="token-card"><span>INF <small id="token-symbol-inf">—</small></span><code id="token-address-inf">Loading deployment…</code><div class="inline-actions"><button id="copy-inf" type="button" class="secondary">Copy address</button><button id="watch-inf" type="button">Add to MetaMask</button></div></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-heading"><h2>Trade &amp; fund</h2><p>Amounts are whole tokens; the UI handles ERC-20 approval where required.</p></div>
+          <div class="grid">
+            <form id="eth-form" class="panel"><div class="panel-top"><span class="step">00</span><h3>Get test ETH for gas</h3></div><p>Top up any address to at least 10 local ETH. No wallet transaction or gas is needed.</p><label>Wallet address (leave blank for connected wallet)<input name="address" type="text" placeholder="0x…" autocomplete="off" spellcheck="false" /></label><button type="submit">Get local ETH</button></form>
+            <form id="faucet-form" class="panel"><div class="panel-top"><span class="step">01</span><h3>Get test collateral</h3></div><p>Anyone can mint up to 1,000 local wstETH per click.</p><label>Amount in wstETH<input name="amount" type="number" min="0.000001" max="1000" step="any" value="500" required /></label><button type="submit">Mint test wstETH</button></form>
+            <form id="fund-form" class="panel"><div class="panel-top"><span class="step">02</span><h3>Fund INF</h3></div><p>Deposit collateral for the junior claim, including when INF NAV is zero. Fund first, before minting NaN.</p><label>wstETH to deposit<input name="amount" type="number" min="0.000001" step="any" value="100" required /></label><button type="submit">Fund reserve</button></form>
+            <form id="mint-form" class="panel"><div class="panel-top"><span class="step">03</span><h3>Mint NaN</h3></div><p>Deposit more collateral and create the senior dollar claim.</p><label>wstETH to deposit<input name="amount" type="number" min="0.000001" step="any" value="180" required /></label><button type="submit">Mint NaN</button></form>
+            <form id="redeem-form" class="panel"><div class="panel-top"><span class="step">04</span><h3>Redeem NaN</h3></div><p>Burn NaN for wstETH. Underwater redemption is pro rata.</p><label>NaN to burn<input name="amount" type="number" min="0.000001" step="any" value="1000" required /></label><button type="submit">Redeem NaN</button></form>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-heading"><h2>INF withdrawal</h2><p>The default delay is three days after the request epoch closes. Settlement has a one-day window.</p></div>
+          <div class="grid">
+            <form id="request-form" class="panel"><div class="panel-top"><span class="step">05</span><h3>Request withdrawal</h3></div><p>Lock INF into the current cohort; the final payout is decided at settlement.</p><label>INF to lock<input name="amount" type="number" min="0.000001" step="any" value="1000" required /></label><button type="submit">Request withdrawal</button></form>
+            <div class="panel"><div class="panel-top"><span class="step">06</span><h3>Settle &amp; claim</h3></div><p>Anyone can settle the cohort at maturity. If the window passes, expire it and reclaim locked INF.</p><div id="withdrawals" class="withdrawals">Connect a wallet to see its requests.</div></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-heading"><h2>Scenario controls</h2><p>These mocks are permissionless and intentionally unsafe. They do not exist in a real deployment.</p></div>
+          <div class="grid">
+            <form id="market-form" class="panel"><div class="panel-top"><span class="step">↘</span><h3>Move the market</h3></div><p>Primary wstETH/USD equals stETH/USD × stETH per wstETH.</p><label>stETH price in USD<input name="price" type="number" min="0.01" step="any" value="3000" required /></label><button type="submit">Set stETH price</button><div class="inline-actions"><button id="crash" type="button" class="secondary">Crash to $1,500</button><button id="rebound" type="button" class="secondary">Recover to $3,000</button></div></form>
+            <form id="rate-form" class="panel"><div class="panel-top"><span class="step">↗</span><h3>Simulate staking yield</h3></div><p>Change the stETH represented by one wstETH. This changes its USD price without changing token balances.</p><label>stETH per wstETH<input name="rate" type="number" min="0.000001" step="any" value="1" required /></label><button type="submit">Set exchange rate</button></form>
+            <div class="panel"><div class="panel-top"><span class="step">◎</span><h3>Oracle failure</h3></div><p>Break the mock primary and exercise NaN's real fallback-redemption router.</p><div class="facts"><span>Primary feed</span><strong id="feed-status">—</strong><span>Redemption source</span><strong id="redemption-source">—</strong></div><div class="inline-actions"><button id="toggle-stale" type="button" class="secondary">Toggle stale</button><button id="toggle-unavailable" type="button" class="secondary">Toggle unavailable</button></div><form id="fallback-form" class="nested-form"><label>Fallback wstETH/USD<input name="price" type="number" min="0" step="any" value="3000" required /></label><button type="submit" class="secondary">Set fallback price</button></form></div>
+            <div class="panel"><div class="panel-top"><span class="step">◷</span><h3>Advance chain time</h3></div><p>Use this to mature withdrawals or watch the INF issuance floor decay.</p><div class="inline-actions"><button id="day" type="button" class="secondary">+1 day</button><button id="three-days" type="button" class="secondary">+3 days</button></div><div class="facts"><span>Chain time</span><strong id="chain-time">—</strong><span>Recovery floor</span><strong id="recovery-floor">—</strong></div><button id="checkpoint" type="button" class="secondary">Checkpoint recovery</button></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-heading"><h2>Governance knobs</h2><p>Only the deployment authorizer can change these. The UI does not grant itself permission.</p></div>
+          <div class="grid">
+            <form id="delay-form" class="panel"><h3>INF withdrawal delay</h3><p>One to 30 days; affects future cohorts only.</p><label>Days<input name="days" type="number" min="1" max="30" step="1" value="3" required /></label><button type="submit">Update delay</button></form>
+            <form id="halving-form" class="panel"><h3>Recovery floor half-life</h3><p>One hour to 30 days; affects future recovery episodes only.</p><label>Hours<input name="hours" type="number" min="1" max="720" step="1" value="24" required /></label><button type="submit">Update halving</button></form>
+          </div>
+          <p class="fineprint">Authorizer <span id="authorizer">—</span> · This local interface is not a governance system.</p>
+        </section>
+      </main>
+
+      <footer>NaN Local Lab · Anvil only · Never use these mocks, private keys, or deployments with real funds.</footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

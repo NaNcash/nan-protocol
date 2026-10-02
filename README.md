@@ -61,6 +61,37 @@ python3 model/check_invariants.py
 
 The Solidity suite includes unit, fuzz, oracle failure, insolvency lifecycle, fee-token rejection, and stateful invariant tests.
 
+## Local Anvil playground
+
+This repository includes a loopback-only Anvil deployment and a small wallet-connected UI. It uses the **real NaNReserve and WstEthUsdOracle** with deliberately unsafe local mocks: a faucet-enabled 18-decimal wstETH token, a controllable 8-decimal stETH/USD primary feed, and a manually priced fallback. The mock token exposes `stEthPerToken`, so its value changes when you simulate staking yield. The healthy mock feed follows Anvil time to make multi-day time travel practical; use its stale/unavailable switches to test failure handling. None of these mocks is suitable for public or production deployment.
+
+Requirements: Foundry (including `anvil` and `forge`), Node.js 20.19+ and npm, and an injected wallet such as MetaMask. From the repository root, run:
+
+```bash
+make local
+```
+
+This one command installs UI dependencies if needed, starts Anvil on port 8545, deploys the local contracts on a fresh chain, and starts the UI on port 5173. If the NaN UI is already running there, it reuses it. Press Ctrl-C to stop the services this command started. Anvil automatically saves to the ignored `.anvil/state.json` on clean exit and every 15 seconds while running. Restart with `make local` to restore balances, transactions, and the existing deployment; it will not redeploy over saved state. Keep `.anvil/state.json` together with `ui/public/local-deployment.json` if moving the playground to another machine.
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173). On first launch, the deployment script checks that the RPC is loopback Anvil chain 31337 and writes an ignored `ui/public/local-deployment.json` manifest for the UI. The Anvil test account key built into the local deployment script is public and **must never hold real funds**. You can override it with `LOCAL_PRIVATE_KEY` for another funded Anvil account. Import an Anvil account displayed in the `make local` terminal into a separate browser wallet profile, connect it to chain 31337, and keep real wallets/keys out of the playground. Never point the wallet or deployment script at a public chain.
+
+If MetaMask reports `Requested resource not available` or repeated `eth_getBlockByNumber` RPC errors when you use the faucet, check its saved network entry for chain 31337. Its RPC URL must be `http://127.0.0.1:8545` on the same machine as Anvil, and the `make local` terminal must still be running. The UI can add a missing network, but MetaMask may retain an older RPC URL when chain 31337 was already configured; edit or remove that entry in MetaMask's network settings, then reconnect. The wallet also needs local ETH for gas, so import a funded Anvil test account rather than using an unfunded real-wallet address.
+
+A quick walkthrough:
+
+1. If your MetaMask address has no gas, use **Get local ETH** to top it up to 10 test ETH. Connect your wallet first or paste its address; the top-up uses Anvil's local RPC and does not need a transaction. Then use the faucet for 500 local wstETH, fund 100 wstETH into INF, and mint NaN using 180 wstETH. Token approvals are prompted when needed.
+2. Set stETH/USD to $1,500. Inspect the underwater reserve, INF NAV and positive recovery issuance floor; use **Fund reserve** with 10 wstETH, then return to $3,000 and checkpoint recovery.
+3. Request an INF withdrawal. Raise the mock stETH price to $4,000 if the target debt ratio otherwise prevents an INF payout. Use **Jump to maturity**, settle during the one-day window, then claim. Partial settlement returns unfilled INF.
+4. Toggle the primary stale or unavailable. NaN redemption uses the local fallback quote with the real router's premium; funding and debt-bearing INF settlement still require a fresh primary.
+
+The UI also exposes fallback price, exchange rate, time travel, a recovery checkpoint and authorizer-only delay/halving updates. Anvil state is retained across ordinary `make local` restarts, but an explicit chain reset or removal of `.anvil/state.json` starts a new chain and redeploys contracts. The UI's `/rpc` route proxies to `127.0.0.1:8545` and is intended only for local development. Do not publish or host this UI with the mock controls enabled.
+
+The **Local tokens** section shows the deployed wstETH, NaN, and INF contract addresses with copy buttons. **Add to MetaMask** uses the wallet's ERC-20 token-import prompt with each token's actual on-chain symbol and decimals; the mock collateral appears as `lwstETH` in MetaMask. If you access the UI through a forwarded port, also forward Anvil port 8545 so MetaMask can query chain 31337. Token suggestions are local to that chain and must be repeated after a fresh Anvil deployment if its addresses change.
+
+On a fresh local deployment, `npm run smoke --prefix ui` exercises the same contracts without a browser: faucet → fund → mint → price crash → insolvent fund → withdraw → fallback redemption. It uses the public Anvil test key and changes chain state, so run it before starting a manual UI session or redeploy afterward.
+
+For an isolated 50-wallet stress run, start a separate Anvil on port 8546, deploy with `PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 forge script script/DeployLocal.s.sol:DeployLocal --rpc-url http://127.0.0.1:8546 --broadcast`, then run `node ui/scripts/stress.mjs`. The script requires a fresh deployment and refuses port 8545. It exercises a 50-account withdrawal cohort, price spike and crash, recapitalization, redemptions, both-oracle failure, missed-settlement refund, and restored funding/minting/redemption. The local mock feed and faucet are intentionally controllable, so this is a protocol-state stress test, not a live-market oracle security test.
+
 ## Deployment
 
 Copy `.env.example` to `.env` and set `AUTHORIZER` to the intended timelock or governance contract, plus the collateral, [direct Chainlink stETH/USD feed](https://data.chain.link/ethereum/mainnet/crypto-usd/steth-usd), Uniswap v3 factory, wstETH/WETH pool, WETH/USDC pool, and their token addresses for the target network. The deployment script creates the TWAP adapter, router, and non-upgradeable reserve. `STETH_USD_FEED` must quote one stETH in USD. The fallback treats one USDC as one USD, so a USDC premium above $1 could make redemption too generous.
