@@ -101,7 +101,7 @@ contract OracleFallbackTest is Test {
 
         vm.prank(ALICE);
         vm.expectRevert(MockAggregator.FeedUnavailable.selector);
-        reserve.recapitalize(1 * WAD, 0, ALICE);
+        reserve.fund(1 * WAD, 0, ALICE);
     }
 
     function testBothSourcesUnavailableHaltsRedemption() public {

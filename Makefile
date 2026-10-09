@@ -14,3 +14,15 @@ check:
 
 deploy-dry-run:
 	forge script script/Deploy.s.sol:Deploy --rpc-url "$$RPC_URL"
+
+local-chain:
+	anvil --host 127.0.0.1 --chain-id 31337
+
+local:
+	node scripts/local-playground.mjs
+
+local-deploy:
+	node scripts/local-deploy.mjs
+
+local-ui:
+	cd ui && npm run dev

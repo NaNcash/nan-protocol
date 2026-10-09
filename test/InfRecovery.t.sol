@@ -100,7 +100,7 @@ contract InfRecoveryTest is Test {
         vm.warp(block.timestamp + 300 days);
         assertEq(reserve.recoveryFloorPriceUsd(), 1);
         vm.prank(BOB);
-        uint256 infOut = reserve.recapitalize(WAD, 0, BOB);
+        uint256 infOut = reserve.fund(WAD, 0, BOB);
         assertEq(infOut, 1_500 * WAD * WAD);
         assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
         assertEq(address(reserve.inf()), address(inf));
@@ -202,7 +202,7 @@ contract InfRecoveryTest is Test {
     function testFlashCrashFundingDilutesButDoesNotExcludeOriginalHolderFromRebound() public {
         _crash();
         vm.prank(BOB);
-        reserve.recapitalize(10 * WAD, 0, BOB);
+        reserve.fund(10 * WAD, 0, BOB);
         uint256 oldBalance = inf.balanceOf(ALICE);
         uint256 supply = inf.totalSupply();
         assertLt(oldBalance, supply);
@@ -222,7 +222,7 @@ contract InfRecoveryTest is Test {
         _crash();
         uint256 debt = reserve.debtUsd();
         vm.prank(BOB);
-        reserve.recapitalize(WAD, 0, BOB);
+        reserve.fund(WAD, 0, BOB);
         assertEq(reserve.debtUsd(), debt);
         assertEq(reserve.infPriceUsd(), 0);
         assertEq(reserve.maxDefundableUsd(), 0);
@@ -245,15 +245,15 @@ contract InfRecoveryTest is Test {
         assertEq(refund, 1_000 * WAD);
     }
 
-    function testFundAndRecapitalizeHaveIdenticalQuotes() public {
+    function testIncrementalInsolventFundingMatchesPreview() public {
         _crash();
-        uint256 snapshot = vm.snapshotState();
-        uint256 preview = reserve.previewFund(10 * WAD);
+        uint256 firstQuote = reserve.previewFund(10 * WAD);
         vm.prank(BOB);
-        uint256 viaFund = reserve.fund(10 * WAD, preview, BOB);
-        assertTrue(vm.revertToStateAndDelete(snapshot));
+        assertEq(reserve.fund(10 * WAD, firstQuote, BOB), firstQuote);
+        uint256 secondQuote = reserve.previewFund(10 * WAD);
         vm.prank(BOB);
-        assertEq(reserve.recapitalize(10 * WAD, preview, BOB), viaFund);
+        assertEq(reserve.fund(10 * WAD, secondQuote, BOB), secondQuote);
+        assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Insolvent));
     }
 
     function testRejectedFundingDoesNotPersistEpisodeOrMoveCollateral() public {
