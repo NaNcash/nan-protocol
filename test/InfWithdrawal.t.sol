@@ -77,6 +77,16 @@ contract InfWithdrawalTest is Test {
         assertEq(inf.balanceOf(ALICE), aliceInf, "unfilled INF must stay in mature escrow");
         assertEq(inf.balanceOf(address(reserve)), 10_000 * WAD - filledInf);
         assertEq(reserve.withdrawalMaturity(series, epoch), maturity);
+        assertEq(reserve.pendingDefundInf(series, epoch, ALICE), 10_000 * WAD - filledInf);
+        uint256 beforeRetry = collateral.balanceOf(ALICE);
+        vm.prank(ALICE);
+        (uint256 retriedOut, uint256 remaining) = reserve.retryDefund(series, epoch, 3 * WAD, ALICE);
+        assertGt(retriedOut, 3 * WAD);
+        assertEq(remaining, 0);
+        assertEq(collateral.balanceOf(ALICE) - beforeRetry, retriedOut);
+        assertEq(reserve.pendingDefundInf(series, epoch, ALICE), 0);
+        assertEq(inf.balanceOf(address(reserve)), 0);
+        assertEq(block.timestamp, maturity, "retry must not impose a new delay");
     }
 
     function testThreeDayMinimumAndExpiredRequestCanBeReclaimed() public {
@@ -304,6 +314,11 @@ contract InfWithdrawalTest is Test {
         assertEq(aliceCollateral + bobCollateral, totalCollateralOut);
         assertEq(aliceRefund + bobRefund + filledInf, 40_000 * WAD);
         assertEq(reserve.claimableWithdrawalCollateral(), 0);
+        vm.prank(ALICE);
+        assertEq(reserve.cancelDefund(series, epoch), aliceRefund);
+        vm.prank(BOB);
+        assertEq(reserve.cancelDefund(series, epoch), bobRefund);
+        assertEq(inf.balanceOf(address(reserve)), 0);
         assertLe(reserve.debtRatioBps(), 6_500);
     }
 
@@ -379,6 +394,153 @@ contract InfWithdrawalTest is Test {
         assertEq(refundedInf, 10 * WAD);
     }
 
+    function _retainPartialWithdrawal() internal returns (uint256 series, uint256 epoch, uint256 unfilled) {
+        _mintDebt();
+        vm.prank(ALICE);
+        (series, epoch) = reserve.requestDefund(20_000 * WAD);
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        reserve.settleDefundEpoch(series, epoch);
+        vm.prank(ALICE);
+        (, unfilled) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertGt(unfilled, 0);
+        assertEq(reserve.pendingDefundInf(series, epoch, ALICE), unfilled);
+    }
+
+    function testRetainedInfCanRetryAfterExpiryAndGovernanceUpdates() public {
+        (uint256 series, uint256 epoch, uint256 unfilled) = _retainPartialWithdrawal();
+        uint256 maturity = reserve.withdrawalMaturity(series, epoch);
+        reserve.setInfWithdrawalDelay(30 days);
+        reserve.setInfWithdrawalEpoch(7 days);
+        vm.warp(reserve.withdrawalExpiry(series, epoch) + 10 days);
+        vm.expectRevert(NaNReserve.WithdrawalAlreadySettled.selector);
+        reserve.expireDefundEpoch(series, epoch);
+        oracle.setPrice(6_000 * WAD);
+        uint256 supply = inf.totalSupply();
+        vm.prank(ALICE);
+        (uint256 out, uint256 remaining) = reserve.retryDefund(series, epoch, 1, BOB);
+        assertGt(out, 0);
+        assertEq(remaining, 0);
+        assertEq(supply - inf.totalSupply(), unfilled);
+        assertEq(reserve.withdrawalMaturity(series, epoch), maturity);
+        assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
+    }
+
+    function testRetrySlippageAndOracleFailurePreserveEscrow() public {
+        (uint256 series, uint256 epoch, uint256 unfilled) = _retainPartialWithdrawal();
+        uint256 supply = inf.totalSupply();
+        uint256 backing = reserve.reserveCollateral();
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.Slippage.selector);
+        reserve.retryDefund(series, epoch, 0, ALICE);
+        oracle.setPrice(6_000 * WAD);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.Slippage.selector);
+        reserve.retryDefund(series, epoch, type(uint256).max, ALICE);
+        oracle.setPrice(0);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.InvalidPrice.selector);
+        reserve.retryDefund(series, epoch, 1, ALICE);
+        assertEq(reserve.pendingDefundInf(series, epoch, ALICE), unfilled);
+        assertEq(inf.totalSupply(), supply);
+        assertEq(reserve.reserveCollateral(), backing);
+    }
+
+    function testOnlyRequesterCanRetryOrCancelAndCannotClaimTwice() public {
+        (uint256 series, uint256 epoch, uint256 unfilled) = _retainPartialWithdrawal();
+        vm.prank(BOB);
+        vm.expectRevert(NaNReserve.NoWithdrawalRequest.selector);
+        reserve.retryDefund(series, epoch, 0, BOB);
+        vm.prank(BOB);
+        vm.expectRevert(NaNReserve.NoWithdrawalRequest.selector);
+        reserve.cancelDefund(series, epoch);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.NoWithdrawalRequest.selector);
+        reserve.claimDefund(series, epoch, 0, ALICE);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.ZeroAddress.selector);
+        reserve.retryDefund(series, epoch, 0, address(0));
+        assertEq(reserve.pendingDefundInf(series, epoch, ALICE), unfilled);
+    }
+
+    function testCancelRefundsRetainedInfWithoutOracleOnce() public {
+        (uint256 series, uint256 epoch, uint256 unfilled) = _retainPartialWithdrawal();
+        uint256 balance = inf.balanceOf(ALICE);
+        uint256 supply = inf.totalSupply();
+        oracle.setPrice(0);
+        vm.expectEmit(true, true, true, true, address(reserve));
+        emit NaNReserve.WithdrawalCancelled(ALICE, series, epoch, unfilled);
+        vm.prank(ALICE);
+        assertEq(reserve.cancelDefund(series, epoch), unfilled);
+        assertEq(inf.balanceOf(ALICE), balance + unfilled);
+        assertEq(inf.balanceOf(address(reserve)), 0);
+        assertEq(inf.totalSupply(), supply);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.NoWithdrawalRequest.selector);
+        reserve.cancelDefund(series, epoch);
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.NoWithdrawalRequest.selector);
+        reserve.retryDefund(series, epoch, 0, ALICE);
+    }
+
+    function testDebtFreeRetryNeedsNoOracleAndKeepsOtherClaimsBacked() public {
+        (uint256 series, uint256 epoch,) = _retainPartialWithdrawal();
+        uint256 debt = reserve.nan().balanceOf(BOB);
+        vm.prank(BOB);
+        reserve.redeem(debt, 0, BOB);
+        // A different cohort's settled collateral must survive the retained request's retry.
+        vm.prank(ALICE);
+        (, uint256 nextEpoch) = reserve.requestDefund(1_000 * WAD);
+        vm.warp(reserve.withdrawalMaturity(series, nextEpoch));
+        reserve.settleDefundEpoch(series, nextEpoch);
+        uint256 claimable = reserve.claimableWithdrawalCollateral();
+        oracle.setPrice(0);
+        vm.prank(ALICE);
+        (uint256 out, uint256 remaining) = reserve.retryDefund(series, epoch, 1, ALICE);
+        assertGt(out, 0);
+        assertEq(remaining, 0);
+        assertEq(reserve.claimableWithdrawalCollateral(), claimable);
+        assertEq(collateral.balanceOf(address(reserve)), reserve.reserveCollateral() + claimable);
+        vm.prank(ALICE);
+        (uint256 claimed,) = reserve.claimDefund(series, nextEpoch, claimable, ALICE);
+        assertEq(claimed, claimable);
+    }
+
+    function testFuzzRepeatedRetryAndCancellationConserveInf(uint96 rawPrice, uint96 rawInf) public {
+        _mintDebt();
+        uint256 requested = bound(uint256(rawInf), 20_000 * WAD, 100_000 * WAD);
+        uint256 supply = inf.totalSupply();
+        vm.prank(ALICE);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(requested);
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        reserve.settleDefundEpoch(series, epoch);
+        vm.prank(ALICE);
+        reserve.claimDefund(series, epoch, 0, ALICE);
+        oracle.setPrice(bound(uint256(rawPrice), 3_001 * WAD, 6_000 * WAD));
+        vm.prank(ALICE);
+        try reserve.retryDefund(series, epoch, 1, ALICE) {} catch {}
+        uint256 pending = reserve.pendingDefundInf(series, epoch, ALICE);
+        uint256 burned = supply - inf.totalSupply();
+        assertEq(burned + pending, requested);
+        assertEq(inf.balanceOf(address(reserve)), pending);
+        assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
+        if (pending != 0) {
+            oracle.setPrice(7_000 * WAD);
+            vm.prank(ALICE);
+            try reserve.retryDefund(series, epoch, 1, ALICE) {} catch {}
+            pending = reserve.pendingDefundInf(series, epoch, ALICE);
+            burned = supply - inf.totalSupply();
+            assertEq(burned + pending, requested);
+            uint256 balance = inf.balanceOf(ALICE);
+            if (pending != 0) {
+                vm.prank(ALICE);
+                reserve.cancelDefund(series, epoch);
+                assertEq(inf.balanceOf(ALICE), balance + pending);
+            }
+        }
+        assertEq(inf.balanceOf(address(reserve)), 0);
+        assertEq(reserve.claimableWithdrawalCollateral(), 0);
+    }
+
     function testFuzzPartialFillConservesInfAndCollateral(uint96 rawAlice, uint96 rawBob) public {
         _mintDebt();
         uint256 aliceAmount = bound(uint256(rawAlice), 1 * WAD, 20_000 * WAD);
@@ -402,6 +564,17 @@ contract InfWithdrawalTest is Test {
         (uint256 aliceOut, uint256 aliceRefund) = reserve.claimDefund(series, epoch, 0, ALICE);
 
         assertEq(aliceOut + bobOut, payout);
+        assertEq(reserve.pendingDefundInf(series, epoch, ALICE), aliceRefund);
+        assertEq(reserve.pendingDefundInf(series, epoch, BOB), bobRefund);
+        if (aliceRefund != 0) {
+            vm.prank(ALICE);
+            assertEq(reserve.cancelDefund(series, epoch), aliceRefund);
+        }
+        if (bobRefund != 0) {
+            vm.prank(BOB);
+            assertEq(reserve.cancelDefund(series, epoch), bobRefund);
+        }
+        assertEq(inf.balanceOf(address(reserve)), 0);
         assertEq(aliceRefund + bobRefund + filledInf, aliceAmount + bobAmount);
         assertLe(aliceRefund, aliceAmount);
         assertLe(bobRefund, bobAmount);

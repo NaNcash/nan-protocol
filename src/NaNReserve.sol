@@ -108,6 +108,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     mapping(uint256 series => mapping(uint256 epoch => WithdrawalEpoch)) public withdrawalEpochs;
     mapping(uint256 series => mapping(uint256 epoch => mapping(address account => WithdrawalRequest))) public
         withdrawalRequests;
+    /// @notice Unfilled INF retained after claim; already mature and available for requester-only retry or cancellation.
+    mapping(uint256 series => mapping(uint256 epoch => mapping(address account => uint256))) public pendingDefundInf;
+    /// @notice Expiration refunds INF; a valid zero-fill settlement instead preserves a mature exit.
+    mapping(uint256 series => mapping(uint256 epoch => bool)) public expiredWithdrawalEpochs;
     /// @notice Settled withdrawal collateral is excluded from reserve backing until users claim it.
     uint256 public claimableWithdrawalCollateral;
 
@@ -116,6 +120,17 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     event WithdrawalRequested(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infIn);
     event WithdrawalSettled(uint256 indexed series, uint256 indexed epoch, uint256 filledInf, uint256 collateralOut);
     event WithdrawalExpired(uint256 indexed series, uint256 indexed epoch);
+    event WithdrawalRetained(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infIn);
+    event WithdrawalCancelled(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infOut);
+    event WithdrawalRetried(
+        address indexed account,
+        address indexed recipient,
+        uint256 indexed series,
+        uint256 epoch,
+        uint256 filledInf,
+        uint256 collateralOut,
+        uint256 remainingInf
+    );
     event WithdrawalClaimed(
         address indexed account,
         address indexed recipient,
@@ -459,7 +474,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
-    /// @dev A cohort can be partially filled, with the unfilled INF returned during claim.
+    /// @dev A cohort can be partially or zero filled; unfilled INF retains its maturity after claim.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -492,14 +507,16 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         if (block.timestamp < uint256(requestEpoch.maturity) + INF_SETTLEMENT_WINDOW) revert WithdrawalNotExpired();
 
         requestEpoch.settled = true;
+        expiredWithdrawalEpochs[series][epoch] = true;
         emit WithdrawalExpired(series, epoch);
     }
 
-    /// @notice Claim fixed collateral and any INF not filled by the settled epoch.
+    /// @notice Claim fixed collateral, retaining unfilled INF for retry; expired cohorts refund INF instead.
+    /// @dev The second return value is unfilled INF, escrowed for settled cohorts or refunded for expired ones.
     function claimDefund(uint256 series, uint256 epoch, uint256 minCollateralOut, address recipient)
         external
         nonReentrant
-        returns (uint256 collateralOut, uint256 refundedInf)
+        returns (uint256 collateralOut, uint256 unfilledInf)
     {
         if (recipient == address(0)) revert ZeroAddress();
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
@@ -516,16 +533,57 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         collateralOut = Math.mulDiv(end, requestEpoch.collateralOut, requestEpoch.requestedInf)
             - Math.mulDiv(request.start, requestEpoch.collateralOut, requestEpoch.requestedInf);
         if (collateralOut < minCollateralOut) revert Slippage();
-        refundedInf = requestedInf - filledInf;
+        unfilledInf = requestedInf - filledInf;
 
         delete withdrawalRequests[series][epoch][msg.sender];
         claimableWithdrawalCollateral -= collateralOut;
 
-        if (refundedInf != 0) IERC20(address(requestEpoch.token)).safeTransfer(msg.sender, refundedInf);
+        uint256 refundedInf;
+        if (unfilledInf != 0) {
+            if (expiredWithdrawalEpochs[series][epoch]) {
+                refundedInf = unfilledInf;
+                IERC20(address(requestEpoch.token)).safeTransfer(msg.sender, refundedInf);
+            } else {
+                pendingDefundInf[series][epoch][msg.sender] = unfilledInf;
+                emit WithdrawalRetained(msg.sender, series, epoch, unfilledInf);
+            }
+        }
         if (collateralOut != 0) collateral.safeTransfer(recipient, collateralOut);
 
         emit WithdrawalClaimed(msg.sender, recipient, series, epoch, filledInf, collateralOut, refundedInf);
         if (filledInf != 0) emit Defunded(msg.sender, recipient, filledInf, collateralOut);
+    }
+
+    /// @notice Retry the caller's retained, already-mature INF at the current quote and target ratio.
+    /// @dev Claim the cohort first. Retries have no expiry, fill individually, and pay collateral immediately.
+    function retryDefund(uint256 series, uint256 epoch, uint256 minCollateralOut, address recipient)
+        external
+        nonReentrant
+        returns (uint256 collateralOut, uint256 remainingInf)
+    {
+        if (recipient == address(0)) revert ZeroAddress();
+        uint256 requestedInf = pendingDefundInf[series][epoch][msg.sender];
+        if (requestedInf == 0) revert NoWithdrawalRequest();
+        uint256 filledInf;
+        (filledInf, collateralOut) = _withdrawalQuote(requestedInf);
+        if (collateralOut == 0 || collateralOut < minCollateralOut) revert Slippage();
+
+        remainingInf = requestedInf - filledInf;
+        pendingDefundInf[series][epoch][msg.sender] = remainingInf;
+        inf.burn(address(this), filledInf);
+        collateral.safeTransfer(recipient, collateralOut);
+
+        emit WithdrawalRetried(msg.sender, recipient, series, epoch, filledInf, collateralOut, remainingInf);
+        emit Defunded(msg.sender, recipient, filledInf, collateralOut);
+    }
+
+    /// @notice Cancel the caller's retained INF after claiming the cohort. No oracle or new delay is required.
+    function cancelDefund(uint256 series, uint256 epoch) external nonReentrant returns (uint256 refundedInf) {
+        refundedInf = pendingDefundInf[series][epoch][msg.sender];
+        if (refundedInf == 0) revert NoWithdrawalRequest();
+        delete pendingDefundInf[series][epoch][msg.sender];
+        IERC20(address(inf)).safeTransfer(msg.sender, refundedInf);
+        emit WithdrawalCancelled(msg.sender, series, epoch, refundedInf);
     }
 
     /// @notice Deposit wstETH and mint NaN at oracle value minus the explicit mint fee.
