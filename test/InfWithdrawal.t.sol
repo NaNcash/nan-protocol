@@ -40,6 +40,62 @@ contract InfWithdrawalTest is Test {
         reserve.mint(180 * WAD, 0, BOB);
     }
 
+    function _useLowSupplyReserve() internal {
+        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 5_500, 6_500, 10, 10);
+        inf = reserve.inf();
+        vm.startPrank(ALICE);
+        collateral.approve(address(reserve), 2);
+        reserve.fund(2, 0, ALICE);
+        inf.approve(address(reserve), 1);
+        vm.stopPrank();
+        assertEq(inf.totalSupply(), 6_000);
+
+        collateral.mint(address(reserve), 2_000 * WAD);
+        vm.startPrank(BOB);
+        collateral.approve(address(reserve), 2_000 * WAD);
+        reserve.mint(2_000 * WAD, 0, BOB);
+        vm.stopPrank();
+    }
+
+    function testZeroBurnRequestReceivesNoCollateral() public {
+        _useLowSupplyReserve();
+        vm.prank(ALICE);
+        assertTrue(inf.transfer(BOB, 3_000));
+        vm.prank(BOB);
+        inf.approve(address(reserve), 3_000);
+        vm.prank(ALICE);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(1);
+        vm.prank(BOB);
+        reserve.requestDefund(3_000);
+
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        reserve.settleDefundEpoch(series, epoch);
+        (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
+        assertEq(filledInf, 1_100);
+        assertEq(payout, 367_033333333333333333);
+        assertEq(inf.totalSupply(), 4_900);
+
+        uint256 aliceCollateralBefore = collateral.balanceOf(ALICE);
+        vm.expectEmit(true, true, true, true, address(reserve));
+        emit NaNReserve.WithdrawalClaimed(ALICE, ALICE, series, epoch, 0, 0, 1);
+        vm.prank(ALICE);
+        (uint256 aliceOut, uint256 aliceRefund) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertEq(aliceOut, 0);
+        assertEq(aliceRefund, 1);
+        assertEq(collateral.balanceOf(ALICE), aliceCollateralBefore);
+        assertEq(inf.balanceOf(ALICE), 3_000);
+        assertEq(reserve.claimableWithdrawalCollateral(), payout);
+
+        vm.expectEmit(true, true, true, true, address(reserve));
+        emit NaNReserve.WithdrawalClaimed(BOB, BOB, series, epoch, filledInf, payout, 1_900);
+        vm.prank(BOB);
+        (uint256 bobOut, uint256 bobRefund) = reserve.claimDefund(series, epoch, payout, BOB);
+        assertEq(bobOut, payout);
+        assertEq(bobRefund, 1_900);
+        assertEq(reserve.claimableWithdrawalCollateral(), 0);
+        assertEq(inf.balanceOf(address(reserve)), 0);
+    }
+
     function testThreeDayMinimumAndExpiredRequestCanBeReclaimed() public {
         vm.prank(ALICE);
         (uint256 series, uint256 epoch) = reserve.requestDefund(10 * WAD);
