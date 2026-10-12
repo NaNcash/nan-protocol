@@ -57,7 +57,7 @@ contract InfIssuanceRoundingTest is Test {
     function testDonationCannotMakeVictimAcceptFractionalInfEvenAtExactQuote() public {
         vm.startPrank(ATTACKER);
         reserve.fund(1e15, 0, ATTACKER);
-        collateral.transfer(address(reserve), WAD);
+        assertTrue(collateral.transfer(address(reserve), WAD));
         vm.stopPrank();
         uint256 oldQuote = 1e15 * inf.totalSupply() / reserve.reserveCollateral();
         assertGt(oldQuote, 0);
@@ -90,7 +90,7 @@ contract InfIssuanceRoundingTest is Test {
         oracle.setPrice(WAD);
         vm.startPrank(ATTACKER);
         reserve.fund(WAD, WAD, ATTACKER);
-        collateral.transfer(address(reserve), WAD);
+        assertTrue(collateral.transfer(address(reserve), WAD));
         vm.stopPrank();
         // NAV is $2: two collateral units mint one INF base unit.
         _assertRejected(2 * WAD - 1, WAD - 1);
@@ -111,12 +111,24 @@ contract InfIssuanceRoundingTest is Test {
         _assertRejected(1, 0);
     }
 
+    function testPartialExitCannotRecreateIssue11RoundingAttack() public {
+        vm.prank(ATTACKER);
+        uint256 shares = reserve.fund(1e15, 0, ATTACKER);
+        _withdraw(ATTACKER, shares - 3_000);
+        // A valid bootstrap followed by a partial exit can reproduce the original tiny supply.
+        assertEq(inf.totalSupply(), 3_000);
+        assertEq(reserve.reserveCollateral(), 1);
+        vm.prank(ATTACKER);
+        assertTrue(collateral.transfer(address(reserve), WAD));
+        _assertRejected(1e15, 2);
+    }
+
     function testThousandDepositsCannotAccumulateMaterialDonationAttackProfit() public {
         uint256 seed = 1e15;
         uint256 donation = WAD;
         vm.startPrank(ATTACKER);
         uint256 shares = reserve.fund(seed, 0, ATTACKER);
-        collateral.transfer(address(reserve), donation);
+        assertTrue(collateral.transfer(address(reserve), donation));
         vm.stopPrank();
         for (uint256 i; i < 1_000; ++i) {
             uint256 quote = reserve.previewFund(WAD);
@@ -134,7 +146,7 @@ contract InfIssuanceRoundingTest is Test {
         uint256 deposit = bound(uint256(rawDeposit), 1, 100 * WAD);
         vm.startPrank(ATTACKER);
         reserve.fund(seed, 0, ATTACKER);
-        collateral.transfer(address(reserve), donation);
+        assertTrue(collateral.transfer(address(reserve), donation));
         vm.stopPrank();
         uint256 exactRoundedQuote = Math.mulDiv(deposit, inf.totalSupply(), reserve.reserveCollateral());
         if (exactRoundedQuote < WAD) {

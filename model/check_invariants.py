@@ -59,13 +59,22 @@ for _ in range(100_000):
 # Same-token funding: integer arithmetic mirrors Solidity rounding. Splitting
 # at the same price/time must not increase issuance, including across target.
 WAD = 10**18
+MIN_INF_ISSUANCE = WAD
 
 
 def funding_quote(deposit, reserve, debt, supply, floor_price):
     equity = max(reserve - debt, 0)
-    if equity * WAD // supply < floor_price:
-        return deposit * WAD // floor_price
-    return deposit * supply // equity
+    if supply == 0:
+        if debt:
+            raise ValueError('no junior capital')
+        minted = deposit
+    elif equity * WAD // supply < floor_price:
+        minted = deposit * WAD // floor_price
+    else:
+        minted = deposit * supply // equity
+    if minted < MIN_INF_ISSUANCE:
+        raise ValueError('minimum INF issuance')
+    return minted
 
 
 for _ in range(100_000):
@@ -76,11 +85,18 @@ for _ in range(100_000):
     deposit = random.randrange(2, max_deposit)
     split = random.randrange(1, deposit)
     floor_price = random.randrange(1, 10 * WAD)
-    minted = funding_quote(deposit, reserve, debt, supply, floor_price)
-    first = funding_quote(split, reserve, debt, supply, floor_price)
-    second = funding_quote(deposit - split, reserve + split, debt, supply + first, floor_price)
-    if first + second > minted:
-        raise AssertionError('splitting funding increased issuance')
+    try:
+        minted = funding_quote(deposit, reserve, debt, supply, floor_price)
+    except ValueError:
+        continue
+    try:
+        first = funding_quote(split, reserve, debt, supply, floor_price)
+        second = funding_quote(deposit - split, reserve + split, debt, supply + first, floor_price)
+    except ValueError:
+        pass  # A split with a sub-minimum tranche is unavailable.
+    else:
+        if first + second > minted:
+            raise AssertionError('splitting funding increased issuance')
     total_supply = supply + minted
     equity = max(reserve + deposit - debt, 0)
     nav = equity * WAD // total_supply
@@ -93,6 +109,23 @@ for _ in range(100_000):
     # The old supply persists; dilution changes ownership, not token identity.
     if total_supply < supply:
         raise AssertionError('existing INF was cancelled')
+
+# Donation attack: accepted debt-free deposits must retain their value to within
+# the issuance rounding bound plus one base unit of withdrawal rounding.
+for _ in range(100_000):
+    seed = random.randrange(WAD, 100 * WAD)
+    donation = random.randrange(1, 10**6 * WAD)
+    deposit = random.randrange(1, 100 * WAD)
+    supply = funding_quote(seed, 0, 0, 0, 0)
+    reserve = seed + donation
+    try:
+        minted = funding_quote(deposit, reserve, 0, supply, 0)
+    except ValueError:
+        continue
+    withdrawn = minted * (reserve + deposit) // (supply + minted)
+    maximum_loss = (deposit + WAD - 1) // WAD + 1
+    if deposit - withdrawn > maximum_loss:
+        raise AssertionError('donation caused excessive funding rounding loss')
 
 # The floor must remain positive and nonincreasing, including very long gaps.
 def decayed_floor(initial, elapsed, period):
