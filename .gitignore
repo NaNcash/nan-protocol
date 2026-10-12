@@ -6,3 +6,5 @@ ui/node_modules/
 ui/dist/
 ui/public/local-deployment.json
 .anvil/
+.solidity-auditor/
+AGENTS.md
