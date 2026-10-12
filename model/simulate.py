@@ -53,7 +53,7 @@ show("after 25% drawdown", s)
 # This float model is illustrative; Solidity uses conservative integer rounding.
 max_debt_ratio = 0.65
 initial_floor = (s.nan / max_debt_ratio - s.nan) / s.inf
-old_inf = s.inf
+old_inf = s.inf - 1  # One whole INF is permanently locked at bootstrap.
 
 # Another 25% drawdown from that level.
 s.reserve *= 0.75
