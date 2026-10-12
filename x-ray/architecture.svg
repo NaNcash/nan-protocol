@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2204" height="800" viewBox="0 0 882 320" font-family="Arial, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 8 6" refX="8" refY="3"
+      markerWidth="4" markerHeight="3" orient="auto">
+      <path d="M0.5,0.5 L7,3 L0.5,5.5" fill="none" stroke="#94A3B8"
+        stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+    </marker>
+    <filter id="shadow" x="-6%" y="-8%" width="112%" height="128%">
+      <feDropShadow dx="0" dy="0.5" stdDeviation="0.8"
+        flood-color="#000" flood-opacity="0.05"/>
+    </filter>
+  </defs>
+  <rect width="882" height="320" fill="#F8F9FB" rx="3"/>
+  <text x="441" y="11" text-anchor="middle" font-size="6" font-weight="700" fill="#1E293B">NaN Protocol Architecture</text>
+  <rect x="366" y="16" width="150" height="10" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <rect x="371" y="18.5" width="5" height="5" rx="2.5" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <text x="379" y="22.5" font-size="3.5" fill="#1E293B">Actor</text>
+  <rect x="411" y="18.5" width="5" height="5" rx="1.5" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <rect x="412" y="19.5" width="0.8" height="3" rx="0.4" fill="#3B82F6"/>
+  <text x="419" y="22.5" font-size="3.5" fill="#1E293B">Protocol</text>
+  <rect x="459" y="18.5" width="5" height="5" rx="1.5" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <rect x="460" y="19.5" width="0.8" height="3" rx="0.4" fill="#F59E0B"/>
+  <text x="467" y="22.5" font-size="3.5" fill="#1E293B">External</text>
+  <path d="M80.8,46.0 C80.8,70.0 146.1,70.0 146.1,94.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M188.8,46.0 C188.8,70.0 146.1,70.0 146.1,94.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M146.1,114.0 C146.1,135.0 79.3,135.0 79.3,156.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M146.1,114.0 C146.1,135.0 191.5,135.0 191.5,156.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M146.1,114.0 C146.1,135.0 321.7,135.0 321.7,156.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M146.1,114.0 C146.1,135.0 455.5,135.0 455.5,156.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M400.5,174.0 C393.9,188.0 385.1,188.0 378.5,176.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M455.5,176.0 C455.5,197.0 431.0,197.0 431.0,218.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M455.5,176.0 C455.5,197.0 592.7,197.0 592.7,218.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M592.7,238.0 C592.7,259.0 551.3,259.0 551.3,280.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M592.7,238.0 C592.7,259.0 674.9,259.0 674.9,280.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M592.7,238.0 C592.7,259.0 798.5,259.0 798.5,280.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <g filter="url(#shadow)">
+    <rect x="30.0" y="32.0" width="101.6" height="14" rx="7" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <text x="80.8" y="40.8" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">NaN / INF holders</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="153.6" y="32.0" width="70.4" height="14" rx="7" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <text x="188.8" y="40.8" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Authorizer</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="83.9" y="94.0" width="124.4" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="86.9" y="97.0" width="1.4" height="14" rx="0.6" fill="#3B82F6"/>
+    <text x="146.1" y="103.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">NaNReserve</text>
+    <text x="146.1" y="108.5" text-anchor="middle" font-size="3.5" fill="#64748B">Collateral / queue / recovery</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="40.5" y="156.0" width="77.6" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="43.5" y="159.0" width="1.4" height="14" rx="0.6" fill="#3B82F6"/>
+    <text x="79.3" y="165.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">NaNToken</text>
+    <text x="79.3" y="170.5" text-anchor="middle" font-size="3.5" fill="#64748B">Senior USD claim</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="140.1" y="156.0" width="102.8" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="143.1" y="159.0" width="1.4" height="14" rx="0.6" fill="#3B82F6"/>
+    <text x="191.5" y="165.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">INFToken</text>
+    <text x="191.5" y="170.5" text-anchor="middle" font-size="3.5" fill="#64748B">Permanent junior equity</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="264.9" y="156.0" width="113.6" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="267.9" y="159.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="321.7" y="165.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">wstETH</text>
+    <text x="321.7" y="170.5" text-anchor="middle" font-size="3.5" fill="#64748B">Collateral / exchange rate</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="400.5" y="156.0" width="110.0" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="403.5" y="159.0" width="1.4" height="14" rx="0.6" fill="#3B82F6"/>
+    <text x="455.5" y="165.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">WstEthUsdOracle</text>
+    <text x="455.5" y="170.5" text-anchor="middle" font-size="3.5" fill="#64748B">Primary / fallback router</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="385.0" y="218.0" width="92.0" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="388.0" y="221.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="431.0" y="227.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">stETH/USD feed</text>
+    <text x="431.0" y="232.5" text-anchor="middle" font-size="3.5" fill="#64748B">Chainlink-compatible</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="537.1" y="218.0" width="111.2" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="540.1" y="221.0" width="1.4" height="14" rx="0.6" fill="#3B82F6"/>
+    <text x="592.7" y="227.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">UniswapV3TwapOracle</text>
+    <text x="592.7" y="232.5" text-anchor="middle" font-size="3.5" fill="#64748B">Redemption fallback</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="498.1" y="280.0" width="106.4" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="501.1" y="283.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="551.3" y="289.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">wstETH / WETH pool</text>
+    <text x="551.3" y="294.5" text-anchor="middle" font-size="3.5" fill="#64748B">Uniswap v3</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="626.5" y="280.0" width="96.8" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="629.5" y="283.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="674.9" y="289.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">WETH / USDC pool</text>
+    <text x="674.9" y="294.5" text-anchor="middle" font-size="3.5" fill="#64748B">Uniswap v3</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="745.3" y="280.0" width="106.4" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="748.3" y="283.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="798.5" y="289.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Uniswap v3 factory</text>
+    <text x="798.5" y="294.5" text-anchor="middle" font-size="3.5" fill="#64748B">Constructor validation</text>
+  </g>
+  <rect x="92.2" y="65.0" width="42.4" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="113.4" y="70.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">deposit / redeem</text>
+  <rect x="146.2" y="65.0" width="42.4" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="167.4" y="70.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">configure policy</text>
+  <rect x="91.5" y="130.0" width="42.4" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="112.7" y="135.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">senior mint/burn</text>
+  <rect x="147.6" y="130.0" width="42.4" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="168.8" y="135.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">junior mint/burn</text>
+  <rect x="211.5" y="130.0" width="44.8" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="233.9" y="135.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">custody transfers</text>
+  <rect x="283.2" y="130.0" width="35.2" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="300.8" y="135.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">request price</text>
+  <rect x="365.9" y="187.0" width="47.2" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="389.5" y="192.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">read exchange-rate</text>
+  <rect x="426.8" y="192.0" width="32.8" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="443.2" y="197.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">read primary</text>
+  <rect x="499.3" y="192.0" width="49.6" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="524.1" y="197.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">redemption fallback</text>
+  <rect x="550.8" y="254.0" width="42.4" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="572.0" y="259.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">wstETH/WETH TWAP</text>
+  <rect x="615.0" y="254.0" width="37.6" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="633.8" y="259.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">WETH/USDC TWAP</text>
+  <rect x="675.6" y="254.0" width="40.0" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="695.6" y="259.0" font-size="4.5" fill="#1E293B" font-weight="500" text-anchor="middle">verify identity</text>
+</svg>

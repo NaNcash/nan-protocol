@@ -1,0 +1,32 @@
+{
+  "title": "NaN Protocol Architecture",
+  "nodes": [
+    {"id":"user","label":"NaN / INF holders","subtitle":"Capital providers","type":"actor","row":0},
+    {"id":"owner","label":"Authorizer","subtitle":"Two-step owner","type":"actor","row":0},
+    {"id":"reserve","label":"NaNReserve","subtitle":"Collateral / queue / recovery","type":"protocol","row":1},
+    {"id":"nan","label":"NaNToken","subtitle":"Senior USD claim","type":"protocol","row":2},
+    {"id":"inf","label":"INFToken","subtitle":"Permanent junior equity","type":"protocol","row":2},
+    {"id":"collateral","label":"wstETH","subtitle":"Collateral / exchange rate","type":"external","row":2},
+    {"id":"router","label":"WstEthUsdOracle","subtitle":"Primary / fallback router","type":"protocol","row":2},
+    {"id":"feed","label":"stETH/USD feed","subtitle":"Chainlink-compatible","type":"external","row":3},
+    {"id":"twap","label":"UniswapV3TwapOracle","subtitle":"Redemption fallback","type":"protocol","row":3},
+    {"id":"poola","label":"wstETH / WETH pool","subtitle":"Uniswap v3","type":"external","row":4},
+    {"id":"poolb","label":"WETH / USDC pool","subtitle":"Uniswap v3","type":"external","row":4},
+    {"id":"factory","label":"Uniswap v3 factory","subtitle":"Constructor validation","type":"external","row":4}
+  ],
+  "edges": [
+    {"from":"user","to":"reserve","label":"deposit / redeem"},
+    {"from":"owner","to":"reserve","label":"configure policy"},
+    {"from":"reserve","to":"nan","label":"senior mint/burn"},
+    {"from":"reserve","to":"inf","label":"junior mint/burn"},
+    {"from":"reserve","to":"collateral","label":"custody transfers"},
+    {"from":"reserve","to":"router","label":"request price"},
+    {"from":"router","to":"collateral","label":"read exchange-rate"},
+    {"from":"router","to":"feed","label":"read primary"},
+    {"from":"router","to":"twap","label":"redemption fallback"},
+    {"from":"twap","to":"poola","label":"wstETH/WETH TWAP"},
+    {"from":"twap","to":"poolb","label":"WETH/USDC TWAP"},
+    {"from":"twap","to":"factory","label":"verify identity"}
+  ],
+  "groups": []
+}
