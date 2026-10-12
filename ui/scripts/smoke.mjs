@@ -6,7 +6,9 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { foundry } from 'viem/chains'
 
 const deployment = JSON.parse(await readFile(resolve(import.meta.dirname, '../public/local-deployment.json'), 'utf8'))
-const rpcUrl = 'http://127.0.0.1:8545'
+const rpcUrl = process.env.LOCAL_RPC_URL ?? 'http://127.0.0.1:8545'
+const rpcEndpoint = new URL(rpcUrl)
+assert.ok(rpcEndpoint.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(rpcEndpoint.hostname), 'smoke tests require loopback Anvil')
 const account = privateKeyToAccount(process.env.LOCAL_PRIVATE_KEY ?? '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80')
 const publicClient = createPublicClient({ chain: foundry, transport: http(rpcUrl) })
 const walletClient = createWalletClient({ chain: foundry, account, transport: http(rpcUrl) })
@@ -24,6 +26,9 @@ const reserveAbi = parseAbi([
   'function withdrawalMaturity(uint256,uint256) view returns (uint256)',
   'function settleDefundEpoch(uint256,uint256)',
   'function claimDefund(uint256,uint256,uint256,address) returns (uint256,uint256)',
+  'function pendingDefundInf(uint256,uint256,address) view returns (uint256)',
+  'function retryDefund(uint256,uint256,uint256,address) returns (uint256,uint256)',
+  'function cancelDefund(uint256,uint256) returns (uint256)',
   'function checkpointRecovery()',
   'function infPriceUsd() view returns (uint256)',
   'function recoveryFloorPriceUsd() view returns (uint256)',
@@ -61,8 +66,7 @@ const recapQuote = await read(deployment.reserve, reserveAbi, 'previewFund', [pa
 await send(deployment.reserve, reserveAbi, 'fund', [parseEther('10'), recapQuote, account.address])
 assert.ok((await read(inf, tokenAbi, 'balanceOf', [account.address])) > parseEther('300000'))
 
-await send(deployment.feed, feedAbi, 'setAnswer', [400_000_000_000n])
-await send(inf, tokenAbi, 'approve', [deployment.reserve, parseEther('1000')])
+await send(inf, tokenAbi, 'approve', [deployment.reserve, parseEther('2000')])
 const requestReceipt = await send(deployment.reserve, reserveAbi, 'requestDefund', [parseEther('1000')])
 const requestLog = requestReceipt.logs.find(log => log.address.toLowerCase() === deployment.reserve.toLowerCase() && log.topics[0] === toEventSelector(requestEvent))
 assert.ok(requestLog, 'withdrawal event missing')
@@ -72,9 +76,28 @@ await publicClient.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${
 await publicClient.request({ method: 'evm_mine' })
 await send(deployment.reserve, reserveAbi, 'settleDefundEpoch', [series, epoch])
 await send(deployment.reserve, reserveAbi, 'claimDefund', [series, epoch, 0n, account.address])
+assert.equal(await read(deployment.reserve, reserveAbi, 'pendingDefundInf', [series, epoch, account.address]), parseEther('1000'))
+await send(deployment.feed, feedAbi, 'setAnswer', [400_000_000_000n])
+await send(deployment.reserve, reserveAbi, 'retryDefund', [series, epoch, 1n, account.address])
+assert.equal(await read(deployment.reserve, reserveAbi, 'pendingDefundInf', [series, epoch, account.address]), 0n)
+
+// A second zero-fill request can be cancelled even when the primary oracle is unavailable.
+await send(deployment.feed, feedAbi, 'setAnswer', [150_000_000_000n])
+const cancelReceipt = await send(deployment.reserve, reserveAbi, 'requestDefund', [parseEther('1000')])
+const cancelLog = cancelReceipt.logs.find(log => log.address.toLowerCase() === deployment.reserve.toLowerCase() && log.topics[0] === toEventSelector(requestEvent))
+const { args: { series: cancelSeries, epoch: cancelEpoch } } = decodeEventLog({ abi: [requestEvent], data: cancelLog.data, topics: cancelLog.topics })
+const cancelMaturity = await read(deployment.reserve, reserveAbi, 'withdrawalMaturity', [cancelSeries, cancelEpoch])
+await publicClient.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${cancelMaturity.toString(16)}`] })
+await publicClient.request({ method: 'evm_mine' })
+await send(deployment.reserve, reserveAbi, 'settleDefundEpoch', [cancelSeries, cancelEpoch])
+await send(deployment.reserve, reserveAbi, 'claimDefund', [cancelSeries, cancelEpoch, 0n, account.address])
+const infBeforeCancel = await read(inf, tokenAbi, 'balanceOf', [account.address])
 
 await send(deployment.feed, feedAbi, 'setUnavailable', [true])
+await send(deployment.reserve, reserveAbi, 'cancelDefund', [cancelSeries, cancelEpoch])
+assert.equal(await read(inf, tokenAbi, 'balanceOf', [account.address]), infBeforeCancel + parseEther('1000'))
+assert.equal(await read(deployment.reserve, reserveAbi, 'pendingDefundInf', [cancelSeries, cancelEpoch, account.address]), 0n)
 const [, fallbackUsed] = await read(deployment.reserve, reserveAbi, 'redemptionCollateralPriceUsd')
 assert.equal(fallbackUsed, true)
 await send(deployment.reserve, reserveAbi, 'redeem', [parseEther('1000'), 0n, account.address])
-process.stdout.write('Local faucet → fund → mint → crash → insolvent fund → withdraw → fallback redeem: PASS\n')
+process.stdout.write('Local faucet → fund → mint → crash → insolvent fund → zero-fill withdrawal → retry → oracle-free cancel → fallback redeem: PASS\n')

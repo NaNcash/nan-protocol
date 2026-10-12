@@ -60,7 +60,7 @@
           <div class="section-heading"><h2>INF withdrawal</h2><p>The default delay is three days after the request epoch closes. Settlement has a one-day window.</p></div>
           <div class="grid">
             <form id="request-form" class="panel"><div class="panel-top"><span class="step">05</span><h3>Request withdrawal</h3></div><p>Lock INF into the current cohort; the final payout is decided at settlement.</p><label>INF to lock<input name="amount" type="number" min="0.000001" step="any" value="1000" required /></label><button type="submit">Request withdrawal</button></form>
-            <div class="panel"><div class="panel-top"><span class="step">06</span><h3>Settle &amp; claim</h3></div><p>Anyone can settle the cohort at maturity. If the window passes, expire it and reclaim locked INF.</p><div id="withdrawals" class="withdrawals">Connect a wallet to see its requests.</div></div>
+            <div class="panel"><div class="panel-top"><span class="step">06</span><h3>Settle &amp; claim</h3></div><p>Anyone can settle the cohort at maturity. Claim the payout, then retry any unfilled INF without another wait or cancel for an INF refund. If the initial window passes without settlement, expire the cohort and reclaim INF.</p><div id="withdrawals" class="withdrawals">Connect a wallet to see its requests.</div></div>
           </div>
         </section>
 
