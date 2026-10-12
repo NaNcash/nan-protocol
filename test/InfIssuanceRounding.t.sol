@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {NaNReserve} from "../src/NaNReserve.sol";
 import {INFToken} from "../src/INFToken.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -74,5 +75,88 @@ contract InfIssuanceRoundingTest is Test {
         _assertRejected(1e12, 0);
         (, uint256 initialPrice,,) = reserve.recovery();
         assertEq(initialPrice, 0);
+    }
+
+    function testBootstrapAcceptsExactlyOneInfAndRejectsOneUnitLess() public {
+        oracle.setPrice(WAD);
+        _assertRejected(WAD - 1, 0);
+        assertEq(reserve.previewFund(WAD), WAD);
+        vm.prank(VICTIM);
+        assertEq(reserve.fund(WAD, WAD, VICTIM), WAD);
+        assertEq(reserve.infPriceUsd(), WAD);
+    }
+
+    function testNavFundingAcceptsExactlyOneInfAndKeepsUserSlippageCheck() public {
+        oracle.setPrice(WAD);
+        vm.startPrank(ATTACKER);
+        reserve.fund(WAD, WAD, ATTACKER);
+        collateral.transfer(address(reserve), WAD);
+        vm.stopPrank();
+        // NAV is $2: two collateral units mint one INF base unit.
+        _assertRejected(2 * WAD - 1, WAD - 1);
+        assertEq(reserve.previewFund(2 * WAD), WAD);
+        vm.prank(VICTIM);
+        vm.expectRevert(NaNReserve.Slippage.selector);
+        reserve.fund(2 * WAD, WAD + 1, VICTIM);
+        vm.prank(VICTIM);
+        assertEq(reserve.fund(2 * WAD, WAD, VICTIM), WAD);
+    }
+
+    function testFullDebtFreeExitCannotReopenTinyBootstrap() public {
+        vm.prank(ATTACKER);
+        uint256 shares = reserve.fund(WAD, 0, ATTACKER);
+        assertEq(_withdraw(ATTACKER, shares), WAD);
+        assertEq(inf.totalSupply(), 0);
+        assertEq(reserve.reserveCollateral(), 0);
+        _assertRejected(1, 0);
+    }
+
+    function testThousandDepositsCannotAccumulateMaterialDonationAttackProfit() public {
+        uint256 seed = 1e15;
+        uint256 donation = WAD;
+        vm.startPrank(ATTACKER);
+        uint256 shares = reserve.fund(seed, 0, ATTACKER);
+        collateral.transfer(address(reserve), donation);
+        vm.stopPrank();
+        for (uint256 i; i < 1_000; ++i) {
+            uint256 quote = reserve.previewFund(WAD);
+            assertGe(quote, WAD);
+            vm.prank(VICTIM);
+            assertEq(reserve.fund(WAD, quote, VICTIM), quote);
+        }
+        // At most one wei of issuance rounding per one-wstETH deposit.
+        assertLe(_withdraw(ATTACKER, shares), seed + donation + 1_000);
+    }
+
+    function testFuzzDonationRoundingLossIsBounded(uint96 rawSeed, uint96 rawDonation, uint96 rawDeposit) public {
+        uint256 seed = bound(uint256(rawSeed), (WAD + 2_999) / 3_000, 100 * WAD);
+        uint256 donation = bound(uint256(rawDonation), 1, 1_000 * WAD);
+        uint256 deposit = bound(uint256(rawDeposit), 1, 100 * WAD);
+        vm.startPrank(ATTACKER);
+        reserve.fund(seed, 0, ATTACKER);
+        collateral.transfer(address(reserve), donation);
+        vm.stopPrank();
+        uint256 exactRoundedQuote = Math.mulDiv(deposit, inf.totalSupply(), reserve.reserveCollateral());
+        if (exactRoundedQuote < WAD) {
+            _assertRejected(deposit, exactRoundedQuote);
+            return;
+        }
+        uint256 quote = reserve.previewFund(deposit);
+        vm.prank(VICTIM);
+        uint256 shares = reserve.fund(deposit, quote, VICTIM);
+        // Bound the victim's actual deposit/withdrawal loss, including collateral rounding.
+        uint256 maximumLoss = Math.ceilDiv(deposit, WAD) + 1;
+        assertGe(_withdraw(VICTIM, shares), deposit > maximumLoss ? deposit - maximumLoss : 0);
+    }
+
+    function _withdraw(address account, uint256 shares) internal returns (uint256 collateralOut) {
+        vm.prank(account);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(shares);
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        reserve.settleDefundEpoch(series, epoch);
+        vm.prank(account);
+        uint256 refund;
+        (collateralOut, refund) = reserve.claimDefund(series, epoch, 0, account);
+        assertEq(refund, 0);
     }
 }

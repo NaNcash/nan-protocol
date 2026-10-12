@@ -23,6 +23,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_FEE_BPS = 1_000;
+    /// @notice Every funding deposit must mint at least one whole INF to bound share-rounding loss.
+    uint256 public constant MIN_INF_ISSUANCE = WAD;
     uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
     uint256 public constant MAX_INF_WITHDRAWAL_DELAY = 30 days;
     uint256 public constant MIN_INF_WITHDRAWAL_EPOCH = 1 hours;
@@ -383,6 +385,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Quote same-token issuance using the current primary price, state and timestamp.
+    /// @dev Reverts with Slippage if output would be below MIN_INF_ISSUANCE, matching fund.
     function previewFund(uint256 collateralIn) external view returns (uint256) {
         if (collateralIn == 0) revert ZeroAmount();
         uint256 price = collateralPriceUsd();
@@ -410,6 +413,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     /// @notice Add junior capital at the greater of real NAV and the recovery issuance floor.
     /// @dev Partial funding is allowed even at zero equity. Existing INF shares are never retired.
+    ///      Every deposit must mint at least MIN_INF_ISSUANCE, including bootstrap and recovery.
     function fund(uint256 collateralIn, uint256 minInfOut, address recipient)
         external
         nonReentrant
@@ -427,7 +431,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         infOut = _fundingQuote(
             _collateralToUsd(collateralIn, price), reserveBefore, debt, infSupply, _decayedFloor(recovery)
         );
-        if (infOut == 0 || infOut < minInfOut) revert Slippage();
+        if (infOut < minInfOut) revert Slippage();
         _pullExact(collateralIn);
         inf.mint(recipient, infOut);
         _syncRecovery(_collateralToUsd(reserveCollateral(), price), debt, inf.totalSupply());
@@ -646,18 +650,23 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     function _fundingQuote(uint256 usdIn, uint256 reserve, uint256 debt, uint256 supply, uint256 floor)
         internal
         pure
-        returns (uint256)
+        returns (uint256 infOut)
     {
         if (supply == 0) {
             if (debt != 0) revert NoJuniorCapital();
-            return usdIn;
+            infOut = usdIn;
+        } else {
+            uint256 equity = reserve > debt ? reserve - debt : 0;
+            if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
+                infOut = Math.mulDiv(usdIn, WAD, floor);
+            } else {
+                // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
+                infOut = Math.mulDiv(usdIn, supply, equity);
+            }
         }
-        uint256 equity = reserve > debt ? reserve - debt : 0;
-        if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
-            return Math.mulDiv(usdIn, WAD, floor);
-        }
-        // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
-        return Math.mulDiv(usdIn, supply, equity);
+        // A preview-based minInfOut alone accepts severely rounded quotes after a donation.
+        // At least 1e18 base units limits share rounding to less than 1e-18 of the exact quote.
+        if (infOut < MIN_INF_ISSUANCE) revert Slippage();
     }
 
     function _recoveryAt(uint256 reserve, uint256 debt, uint256 supply) internal view returns (Recovery memory next) {

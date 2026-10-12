@@ -36,6 +36,8 @@ The debt ratio is `D/R`, with governance-set bounds `0 < min < target < max < 10
 
 Funding deposits wstETH and mints the permanent INF token. With no supply, it bootstraps at $1; otherwise it uses the greater of current residual NAV and the recovery issuance floor described below. Zero-equity and partial recovery funding are allowed. With outstanding debt, funding is capped so the post-funding ratio remains at or above the minimum; debt-free funding is uncapped. Ordinary NAV quotes use the exact equity/supply ratio, not a rounded per-token price. INF output rounds down.
 
+Every funding deposit must mint at least one whole INF (`MIN_INF_ISSUANCE = 1e18` base units). The shared quote enforces this for bootstrap, NAV, and recovery, so both `previewFund` and `fund` revert with `Slippage` for smaller outputs before any collateral is transferred. If the exact quote is `q` base units, issuance loses less than one base unit; requiring `floor(q) >= 1e18` bounds the relative share-rounding loss below `1e-18`. This prevents donation-driven inflation from making later funders accept materially rounded allocations even when their minimum output matches the preview. It does not guarantee recovery NAV or remove collateral/USD rounding. Small deposits may be unavailable at high issuance prices; the minimum is in INF units, not a fixed USD or collateral amount. No shares are permanently locked, and a full debt-free exit still burns the entire supply; subsequent bootstrap must satisfy the same minimum.
+
 ### Mint
 
 ```text

@@ -20,6 +20,7 @@ contract NaNReserveHandler is Test {
     uint256 public lastWithdrawalSeries;
     uint256 public lastWithdrawalEpoch;
     bool public hasWithdrawal;
+    bool public fundingOutputsMeetMinimum = true;
     uint256[] public withdrawalEpochIds;
     uint256[] public withdrawalMaturities;
 
@@ -42,7 +43,9 @@ contract NaNReserveHandler is Test {
 
     function fund(uint96 rawAmount) external {
         uint256 amount = bound(uint256(rawAmount), 1e12, 500 * WAD);
-        try reserve.fund(amount, 0, address(this)) {} catch {}
+        try reserve.fund(amount, 0, address(this)) returns (uint256 infOut) {
+            if (infOut < reserve.MIN_INF_ISSUANCE()) fundingOutputsMeetMinimum = false;
+        } catch {}
     }
 
     function mint(uint96 rawAmount) external {
@@ -249,6 +252,10 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
 
     function invariantDebtAlwaysEqualsNanSupply() public view {
         assertEq(reserve.debtUsd(), reserve.nan().totalSupply());
+    }
+
+    function invariantSuccessfulFundingAlwaysMeetsMinimumIssuance() public view {
+        assertTrue(handler.fundingOutputsMeetMinimum());
     }
 
     function invariantInfAddressAndNamespaceNeverChange() public view {

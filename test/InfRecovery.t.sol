@@ -349,8 +349,11 @@ contract InfRecoveryTest is Test {
         reserve.checkpointRecovery();
         vm.warp(block.timestamp + bound(uint256(rawTime), 0, 300 days));
         uint256 maxAmount = Math.min(400 * WAD, reserve.maxFundableUsd() * WAD / price);
-        uint256 amount = bound(uint256(rawAmount), 2e12, maxAmount);
-        uint256 split = bound(uint256(rawSplit), 1e12, amount - 1e12);
+        // Each tranche must mint a whole INF. One extra collateral wei covers NAV rounding
+        // after the first tranche, while keeping the fuzz test focused on successful splits.
+        uint256 minAmount = Math.mulDiv(reserve.fundingPriceUsd(), WAD, price, Math.Rounding.Ceil) + 1;
+        uint256 amount = bound(uint256(rawAmount), 2 * minAmount, maxAmount);
+        uint256 split = bound(uint256(rawSplit), minAmount, amount - minAmount);
         uint256 snapshot = vm.snapshotState();
         vm.prank(BOB);
         uint256 whole = reserve.fund(amount, 0, BOB);
