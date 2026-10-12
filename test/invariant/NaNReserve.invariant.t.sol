@@ -351,7 +351,7 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
             }
             escrow += reserve.pendingDefundInf(series, epoch, address(handler));
         }
-        assertEq(reserve.inf().balanceOf(address(reserve)), escrow);
+        assertEq(reserve.inf().balanceOf(address(reserve)), reserve.MINIMUM_INF_LIQUIDITY() + escrow);
     }
 
     function invariantExistingWithdrawalCohortsKeepTheirMaturity() public view {

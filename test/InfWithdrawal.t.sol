@@ -99,10 +99,12 @@ contract InfWithdrawalTest is Test {
         vm.stopPrank();
         assertEq(inf.totalSupply(), 6_000 * WAD);
 
-        collateral.mint(address(reserve), 1_998 * WAD);
+        // Keep enough collateral per raw filled unit to reproduce independent-prefix leakage.
+        collateral.mint(address(reserve), 19_998 * WAD);
+        collateral.mint(BOB, 18_000 * WAD);
         vm.startPrank(BOB);
-        collateral.approve(address(reserve), 2_000 * WAD);
-        reserve.mint(2_000 * WAD, 0, BOB);
+        collateral.approve(address(reserve), 20_000 * WAD);
+        reserve.mint(20_000 * WAD, 0, BOB);
         vm.stopPrank();
     }
 
@@ -120,8 +122,9 @@ contract InfWithdrawalTest is Test {
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         reserve.settleDefundEpoch(series, epoch);
         (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
-        assertEq(filledInf, 1100717464353827990190);
-        assertEq(payout, 367272727272727272726);
+        assertEq(filledInf, 1100717464353827990191);
+        assertEq(payout, 3672727272727272727270);
+        assertGt(payout / (3_000 * WAD + 1), 0, "independent prefix would pay a zero-burn request");
         assertEq(inf.totalSupply(), 6_000 * WAD - filledInf);
 
         vm.prank(ALICE);
