@@ -40,6 +40,45 @@ contract InfWithdrawalTest is Test {
         reserve.mint(180 * WAD, 0, BOB);
     }
 
+    function testTemporaryDebtCannotRefundMatureZeroFill() public {
+        _assertTemporaryDebtKeepsUnfilledInf(23 * WAD, false);
+    }
+
+    function testTemporaryDebtCannotRefundMatureNegligibleFill() public {
+        _assertTemporaryDebtKeepsUnfilledInf(22_494432070269487750, true);
+    }
+
+    function _assertTemporaryDebtKeepsUnfilledInf(uint256 temporaryCollateral, bool isPartial) internal {
+        reserve.setDebtRatios(3_000, 5_500, 6_500);
+        vm.prank(BOB);
+        reserve.mint(100 * WAD, 0, BOB);
+        vm.prank(ALICE);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(10_000 * WAD);
+        uint256 maturity = reserve.withdrawalMaturity(series, epoch);
+        uint256 aliceInf = inf.balanceOf(ALICE);
+        vm.warp(maturity);
+
+        vm.prank(BOB);
+        uint256 temporaryDebt = reserve.mint(temporaryCollateral, 0, BOB);
+        reserve.settleDefundEpoch(series, epoch);
+        (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
+        if (isPartial) {
+            assertGt(payout, 0);
+            assertLt(payout, 1e12);
+        } else {
+            assertEq(payout, 0);
+        }
+        vm.prank(BOB);
+        reserve.redeem(temporaryDebt, 0, BOB);
+        assertGt(reserve.maxDefundableUsd(), 0);
+
+        vm.prank(ALICE);
+        reserve.claimDefund(series, epoch, 0, ALICE);
+        assertEq(inf.balanceOf(ALICE), aliceInf, "unfilled INF must stay in mature escrow");
+        assertEq(inf.balanceOf(address(reserve)), 10_000 * WAD - filledInf);
+        assertEq(reserve.withdrawalMaturity(series, epoch), maturity);
+    }
+
     function testThreeDayMinimumAndExpiredRequestCanBeReclaimed() public {
         vm.prank(ALICE);
         (uint256 series, uint256 epoch) = reserve.requestDefund(10 * WAD);
