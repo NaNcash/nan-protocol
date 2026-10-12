@@ -45,7 +45,7 @@ contract InfMinimumLiquidityTest is Test {
         uint256 attackerBefore = wstETH.balanceOf(ALICE);
         // Use a small bootstrap that remains valid with minimum liquidity locked.
         vm.prank(ALICE);
-        reserve.fund(1_000_000, 0, ALICE);
+        reserve.fund(1e15, 0, ALICE);
         (uint256 series, uint256 epoch) = _requestAndSettle(inf.balanceOf(ALICE) - 1);
         vm.prank(ALICE);
         reserve.claimDefund(series, epoch, 0, ALICE);
