@@ -28,6 +28,9 @@ It is an economic-design draft, not a production-ready or audited release.
   into the healthy band resets the clock even if the withdrawal target is not met.
 - The interval and exit ratio are snapshotted. Parameter changes affect future
   episodes, never rewrite an existing episode's clock or initial price.
+- If an observation ends an old episode but still breaches a lower current
+  maximum, it starts a replacement in the same observation. Quotes and funding
+  apply the new floor immediately, using the current interval and exit ratio.
 
 ## Observation and integration
 
