@@ -272,6 +272,11 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         if (reserve.debtUsd() != 0) assertGt(reserve.inf().totalSupply(), 0);
     }
 
+    function invariantMinimumInfLiquidityRemainsLocked() public view {
+        assertGe(reserve.inf().totalSupply(), reserve.MINIMUM_INF_LIQUIDITY());
+        assertGe(reserve.inf().balanceOf(address(reserve)), reserve.MINIMUM_INF_LIQUIDITY());
+    }
+
     function invariantHealthyStateRespectsConfiguredDebtRatio() public view {
         if (reserve.health() == NaNReserve.Health.Healthy) {
             assertLe(reserve.debtRatioBps(), reserve.maxDebtRatioBps());
