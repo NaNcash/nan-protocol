@@ -511,13 +511,16 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         // Map each request to a disjoint filled-INF interval, then allocate collateral
         // over that same interval. Prefix differences conserve both totals regardless
         // of claim order, and a request with no filled INF receives no collateral.
-        uint256 end = request.start + requestedInf;
-        uint256 filledStart = Math.mulDiv(request.start, requestEpoch.filledInf, requestEpoch.requestedInf);
-        uint256 filledEnd = Math.mulDiv(end, requestEpoch.filledInf, requestEpoch.requestedInf);
-        uint256 filledInf = filledEnd - filledStart;
-        if (requestEpoch.filledInf != 0) {
-            collateralOut = Math.mulDiv(filledEnd, requestEpoch.collateralOut, requestEpoch.filledInf)
-                - Math.mulDiv(filledStart, requestEpoch.collateralOut, requestEpoch.filledInf);
+        uint256 filledInf;
+        {
+            uint256 end = request.start + requestedInf;
+            uint256 filledStart = Math.mulDiv(request.start, requestEpoch.filledInf, requestEpoch.requestedInf);
+            uint256 filledEnd = Math.mulDiv(end, requestEpoch.filledInf, requestEpoch.requestedInf);
+            filledInf = filledEnd - filledStart;
+            if (requestEpoch.filledInf != 0) {
+                collateralOut = Math.mulDiv(filledEnd, requestEpoch.collateralOut, requestEpoch.filledInf)
+                    - Math.mulDiv(filledStart, requestEpoch.collateralOut, requestEpoch.filledInf);
+            }
         }
         if (collateralOut < minCollateralOut) revert Slippage();
         refundedInf = requestedInf - filledInf;
