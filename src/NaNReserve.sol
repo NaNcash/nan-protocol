@@ -668,8 +668,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
             if (
                 _withinDebtRatio(debt, reserve, next.exitDebtRatioBps)
                     && Math.mulDiv(equity, WAD, supply) >= _decayedFloor(next)
-            ) return Recovery(0, 0, 0, 0);
-        } else if (!_withinMaxDebtRatio(debt, reserve) || reserve == 0) {
+            ) next = Recovery(0, 0, 0, 0);
+        }
+        // An ended episode may already need replacement under a tighter current maximum.
+        if (next.initialPriceUsd == 0 && (!_withinMaxDebtRatio(debt, reserve) || reserve == 0)) {
             // Price at the max-ratio boundary, not the potentially near-zero crash NAV.
             uint256 boundaryEquity = Math.mulDiv(debt, BPS - maxDebtRatioBps, maxDebtRatioBps, Math.Rounding.Ceil);
             uint256 initialPrice =
@@ -683,7 +685,13 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     function _syncRecovery(uint256 reserve, uint256 debt, uint256 supply) internal {
         Recovery memory next = _recoveryAt(reserve, debt, supply);
-        if (recovery.initialPriceUsd == 0 && next.initialPriceUsd != 0) {
+        // Active-to-active replacement is possible only when the exit ratio changed:
+        // the old ratio is satisfied while the current maximum is still breached.
+        if (
+            next.initialPriceUsd != 0
+                && (recovery.initialPriceUsd == 0 || recovery.exitDebtRatioBps != next.exitDebtRatioBps)
+        ) {
+            if (recovery.initialPriceUsd != 0) emit RecoveryEnded();
             recovery = next;
             emit RecoveryStarted(next.initialPriceUsd, next.halvingPeriod, next.exitDebtRatioBps);
         } else if (recovery.initialPriceUsd != 0 && next.initialPriceUsd == 0) {
