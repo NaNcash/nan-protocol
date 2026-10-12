@@ -75,6 +75,13 @@ contract InfWithdrawalTest is Test {
         assertEq(payout, 367_033333333333333333);
         assertEq(inf.totalSupply(), 4_900);
 
+        vm.prank(ALICE);
+        vm.expectRevert(NaNReserve.Slippage.selector);
+        reserve.claimDefund(series, epoch, 1, ALICE);
+        (, uint256 pendingInf) = reserve.withdrawalRequests(series, epoch, ALICE);
+        assertEq(pendingInf, 1);
+        assertEq(reserve.claimableWithdrawalCollateral(), payout);
+
         uint256 aliceCollateralBefore = collateral.balanceOf(ALICE);
         vm.expectEmit(true, true, true, true, address(reserve));
         emit NaNReserve.WithdrawalClaimed(ALICE, ALICE, series, epoch, 0, 0, 1);
@@ -94,6 +101,98 @@ contract InfWithdrawalTest is Test {
         assertEq(bobRefund, 1_900);
         assertEq(reserve.claimableWithdrawalCollateral(), 0);
         assertEq(inf.balanceOf(address(reserve)), 0);
+    }
+
+    function testZeroFilledEpochRefundsAllInf() public {
+        _useLowSupplyReserve();
+        vm.prank(ALICE);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(1);
+        oracle.setPrice(1_500 * WAD);
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        reserve.settleDefundEpoch(series, epoch);
+        (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
+        assertEq(filledInf, 0);
+        assertEq(payout, 0);
+
+        vm.prank(ALICE);
+        (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
+        assertEq(collateralOut, 0);
+        assertEq(refundedInf, 1);
+        assertEq(inf.balanceOf(ALICE), 6_000);
+        assertEq(inf.totalSupply(), 6_000);
+        assertEq(reserve.claimableWithdrawalCollateral(), 0);
+        assertEq(inf.balanceOf(address(reserve)), 0);
+    }
+
+    function testFuzzLowSupplyClaimsMatchBurns(
+        uint16 rawTotal,
+        uint8 rawCount,
+        uint64 rawSplit,
+        uint96 rawPrice,
+        bool reverse
+    ) public {
+        _useLowSupplyReserve();
+        uint256 count = bound(uint256(rawCount), 2, 8);
+        uint256 remaining = bound(uint256(rawTotal), count, 6_000);
+        uint256[] memory amounts = new uint256[](count);
+        for (uint256 i; i < count; ++i) {
+            uint256 amount = i == count - 1
+                ? remaining
+                : bound(uint256(keccak256(abi.encode(rawSplit, i))), 1, remaining - (count - i - 1));
+            amounts[i] = amount;
+            remaining -= amount;
+            // The cohort has at most eight accounts, so 0x1000 + i fits in uint160.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            address account = address(uint160(0x1000 + i));
+            vm.prank(ALICE);
+            assertTrue(inf.transfer(account, amount));
+            vm.startPrank(account);
+            inf.approve(address(reserve), amount);
+            reserve.requestDefund(amount);
+            vm.stopPrank();
+        }
+
+        (uint256 epoch,) = reserve.currentWithdrawalEpoch();
+        oracle.setPrice(bound(uint256(rawPrice), 1_500 * WAD, 6_000 * WAD));
+        vm.warp(reserve.withdrawalMaturity(1, epoch));
+        reserve.settleDefundEpoch(1, epoch);
+        _claimAndCheckLowSupplyCohort(epoch, amounts, reverse);
+    }
+
+    function _claimAndCheckLowSupplyCohort(uint256 epoch, uint256[] memory amounts, bool reverse) internal {
+        (, uint256 requestedInf, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(1, epoch);
+        uint256 totalOut;
+        uint256 totalRefund;
+        for (uint256 i; i < amounts.length; ++i) {
+            uint256 index = reverse ? amounts.length - 1 - i : i;
+            (uint256 out, uint256 refund) = _claimLowSupplyRequest(epoch, index, amounts[index], filledInf, payout);
+            totalOut += out;
+            totalRefund += refund;
+            assertEq(reserve.claimableWithdrawalCollateral(), payout - totalOut);
+        }
+        assertEq(totalOut, payout);
+        assertEq(totalRefund + filledInf, requestedInf);
+        assertEq(inf.totalSupply(), 6_000 - filledInf);
+        assertEq(reserve.claimableWithdrawalCollateral(), 0);
+        assertEq(inf.balanceOf(address(reserve)), 0);
+    }
+
+    function _claimLowSupplyRequest(uint256 epoch, uint256 index, uint256 amount, uint256 filledInf, uint256 payout)
+        internal
+        returns (uint256 out, uint256 refund)
+    {
+        // The index is bounded by the cohort's maximum of eight accounts.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        address account = address(uint160(0x1000 + index));
+        uint256 beforeCollateral = collateral.balanceOf(account);
+        vm.prank(account);
+        (out, refund) = reserve.claimDefund(1, epoch, 0, account);
+        uint256 burned = amount - refund;
+        if (burned == 0) assertEq(out, 0);
+        // Every burned unit receives the cohort rate, within one collateral wei.
+        assertApproxEqAbs(out * filledInf, burned * payout, filledInf);
+        assertEq(collateral.balanceOf(account) - beforeCollateral, out);
+        assertEq(inf.balanceOf(account), refund);
     }
 
     function testThreeDayMinimumAndExpiredRequestCanBeReclaimed() public {
