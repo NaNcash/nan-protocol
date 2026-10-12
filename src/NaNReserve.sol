@@ -23,6 +23,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_FEE_BPS = 1_000;
+    /// @notice One whole INF (1e18 base units), permanently held by the reserve after bootstrap.
+    uint256 public constant MINIMUM_INF_LIQUIDITY = WAD;
     uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
     uint256 public constant MAX_INF_WITHDRAWAL_DELAY = 30 days;
     uint256 public constant MIN_INF_WITHDRAWAL_EPOCH = 1 hours;
@@ -425,6 +427,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     /// @notice Add junior capital at the greater of real NAV and the recovery issuance floor.
     /// @dev Partial funding is allowed even at zero equity. Existing INF shares are never retired.
+    ///      Bootstrap output excludes MINIMUM_INF_LIQUIDITY, locked permanently in this reserve.
     function fund(uint256 collateralIn, uint256 minInfOut, address recipient)
         external
         nonReentrant
@@ -444,6 +447,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         );
         if (infOut == 0 || infOut < minInfOut) revert Slippage();
         _pullExact(collateralIn);
+        // The reserve cannot request withdrawals or approve transfers of its own INF.
+        // Settlement burns only user-requested shares, leaving this liquidity locked forever.
+        if (infSupply == 0) inf.mint(address(this), MINIMUM_INF_LIQUIDITY);
         inf.mint(recipient, infOut);
         _syncRecovery(_collateralToUsd(reserveCollateral(), price), debt, inf.totalSupply());
 
@@ -667,13 +673,13 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     // -------------------------------------------------------------------------
 
     function _withdrawalQuote(uint256 requestedInf) internal returns (uint256 filledInf, uint256 collateralOut) {
-        uint256 supply = inf.totalSupply(); // Includes INF locked by all unsettled cohorts.
+        uint256 supply = inf.totalSupply(); // Includes permanent minimum liquidity and all unsettled cohorts.
         uint256 reserve = reserveCollateral();
         uint256 debt = debtUsd();
 
         if (debt == 0) {
             filledInf = requestedInf;
-            collateralOut = requestedInf == supply ? reserve : Math.mulDiv(requestedInf, reserve, supply);
+            collateralOut = Math.mulDiv(requestedInf, reserve, supply);
             return (filledInf, collateralOut);
         }
 
@@ -715,7 +721,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     {
         if (supply == 0) {
             if (debt != 0) revert NoJuniorCapital();
-            return usdIn;
+            if (usdIn <= MINIMUM_INF_LIQUIDITY) revert Slippage();
+            return usdIn - MINIMUM_INF_LIQUIDITY;
         }
         uint256 equity = reserve > debt ? reserve - debt : 0;
         if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {

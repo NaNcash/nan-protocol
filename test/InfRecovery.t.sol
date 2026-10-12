@@ -102,7 +102,7 @@ contract InfRecoveryTest is Test {
         vm.prank(BOB);
         uint256 infOut = reserve.fund(WAD, 0, BOB);
         assertEq(infOut, 1_500 * WAD * WAD);
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
         assertEq(address(reserve.inf()), address(inf));
         assertEq(reserve.infPriceUsd(), 0);
     }
@@ -114,7 +114,7 @@ contract InfRecoveryTest is Test {
         reserve.checkpointRecovery();
         (, uint256 initial,,) = reserve.recovery();
         assertEq(initial, 0);
-        assertEq(inf.balanceOf(ALICE), inf.totalSupply());
+        assertEq(inf.balanceOf(ALICE) + reserve.MINIMUM_INF_LIQUIDITY(), inf.totalSupply());
         assertEq(reserve.recoveryFloorPriceUsd(), 0);
         assertEq(reserve.equityUsd(), 300_540 * WAD);
     }
@@ -452,7 +452,7 @@ contract InfRecoveryTest is Test {
         parts += reserve.fund(amount - split, 0, BOB);
         vm.stopPrank();
         assertLe(parts, whole);
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
     }
 
     function testFuzzDecayIsMonotoneAndPositive(uint32 rawFirst, uint32 rawSecond) public {
