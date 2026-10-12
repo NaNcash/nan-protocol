@@ -59,7 +59,7 @@ for _ in range(100_000):
 # Same-token funding: integer arithmetic mirrors Solidity rounding. Splitting
 # at the same price/time must not increase issuance, including across target.
 WAD = 10**18
-MIN_INF_ISSUANCE = WAD
+MINIMUM_INF_LIQUIDITY = WAD
 
 
 def funding_quote(deposit, reserve, debt, supply, floor_price):
@@ -67,13 +67,13 @@ def funding_quote(deposit, reserve, debt, supply, floor_price):
     if supply == 0:
         if debt:
             raise ValueError('no junior capital')
-        minted = deposit
+        minted = deposit - MINIMUM_INF_LIQUIDITY
     elif equity * WAD // supply < floor_price:
         minted = deposit * WAD // floor_price
     else:
         minted = deposit * supply // equity
-    if minted < MIN_INF_ISSUANCE:
-        raise ValueError('minimum INF issuance')
+    if minted <= 0:
+        raise ValueError('zero INF issuance')
     return minted
 
 
@@ -93,7 +93,7 @@ for _ in range(100_000):
         first = funding_quote(split, reserve, debt, supply, floor_price)
         second = funding_quote(deposit - split, reserve + split, debt, supply + first, floor_price)
     except ValueError:
-        pass  # A split with a sub-minimum tranche is unavailable.
+        pass  # A split with a zero-output tranche is unavailable.
     else:
         if first + second > minted:
             raise AssertionError('splitting funding increased issuance')
@@ -110,22 +110,66 @@ for _ in range(100_000):
     if total_supply < supply:
         raise AssertionError('existing INF was cancelled')
 
-# Donation attack: accepted debt-free deposits must retain their value to within
-# the issuance rounding bound plus one base unit of withdrawal rounding.
+# Locked supply prevents the tiny-supply setup. A debt-free round trip loses
+# at most one raw share of pre-deposit NAV plus one unit of asset rounding.
 for _ in range(100_000):
-    seed = random.randrange(WAD, 100 * WAD)
+    seed = random.randrange(MINIMUM_INF_LIQUIDITY + 1, 100 * WAD)
     donation = random.randrange(1, 10**6 * WAD)
     deposit = random.randrange(1, 100 * WAD)
-    supply = funding_quote(seed, 0, 0, 0, 0)
+    supply = funding_quote(seed, 0, 0, 0, 0) + MINIMUM_INF_LIQUIDITY
     reserve = seed + donation
     try:
         minted = funding_quote(deposit, reserve, 0, supply, 0)
     except ValueError:
         continue
     withdrawn = minted * (reserve + deposit) // (supply + minted)
-    maximum_loss = (deposit + WAD - 1) // WAD + 1
+    maximum_loss = (reserve + supply - 1) // supply + 1
     if deposit - withdrawn > maximum_loss:
-        raise AssertionError('donation caused excessive funding rounding loss')
+        raise AssertionError('donation exceeded per-share funding rounding bound')
+
+# Maximum funding remains available at a newly observed stress boundary,
+# including closely spaced permitted ratios and the minimum live supply.
+for _ in range(100_000):
+    maximum = random.randrange(3, BPS)
+    minimum = random.randrange(1, maximum - 1)
+    debt = random.randrange(WAD, 10**9 * WAD)
+    supply = random.randrange(MINIMUM_INF_LIQUIDITY, 1000 * WAD)
+    reserve = debt * BPS // maximum - 1
+    boundary_equity = (debt * (BPS - maximum) + maximum - 1) // maximum
+    floor_price = (boundary_equity * WAD + supply - 1) // supply
+    available = debt * BPS // minimum - reserve
+    if funding_quote(available, reserve, debt, supply, floor_price) <= 0:
+        raise AssertionError('maximum recovery funding unavailable')
+
+# Redemptions shrink current debt/cap but do not rewrite an existing floor.
+# Fractional INF output must remain possible without waiting for floor decay.
+for _ in range(100_000):
+    old_debt = random.randrange(100 * WAD, 10**9 * WAD)
+    debt = random.randrange(WAD, old_debt)
+    reserve = debt * 420_000 // 539_460
+    supply = MINIMUM_INF_LIQUIDITY
+    floor_price = (old_debt * (BPS - MAX_DR) + MAX_DR - 1) // MAX_DR
+    available = debt * BPS // MIN_DR - reserve
+    if funding_quote(available, reserve, debt, supply, floor_price) <= 0:
+        raise AssertionError('redemption stranded recovery funding')
+
+# Sequential funding cannot amortize the locked donation into attacker profit.
+for _ in range(1_000):
+    seed = random.randrange(MINIMUM_INF_LIQUIDITY + 1, 100 * WAD)
+    donation = random.randrange(1, 10_000 * WAD)
+    attacker = funding_quote(seed, 0, 0, 0, 0)
+    supply = attacker + MINIMUM_INF_LIQUIDITY
+    reserve = seed + donation
+    for _ in range(random.randrange(1, 1_001)):
+        deposit = random.randrange(1, 10 * WAD)
+        try:
+            minted = funding_quote(deposit, reserve, 0, supply, 0)
+        except ValueError:
+            continue
+        reserve += deposit
+        supply += minted
+    if attacker * reserve // supply > seed + donation:
+        raise AssertionError('sequential donation attack profitable')
 
 # The floor must remain positive and nonincreasing, including very long gaps.
 def decayed_floor(initial, elapsed, period):

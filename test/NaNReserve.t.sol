@@ -86,7 +86,7 @@ contract NaNReserveTest is Test {
 
     function testInitialFundingStartsInfAtOneDollar() public {
         _bootstrap();
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
         assertEq(reserve.infPriceUsd(), WAD);
         assertEq(reserve.reserveUsd(), 300_000 * WAD);
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.NoDebt));
@@ -180,28 +180,33 @@ contract NaNReserveTest is Test {
         assertLe(reserve.debtRatioBps(), 6_500);
     }
 
-    function testAllInfCanDefundWhenThereIsNoDebt() public {
+    function testAllUserInfCanDefundWhenThereIsNoDebt() public {
         _bootstrap();
         uint256 infSupply = inf.totalSupply();
-        (uint256 series, uint256 epoch) = _requestAndSettle(infSupply);
+        uint256 userInf = inf.balanceOf(ALICE);
+        uint256 expectedCollateral = userInf * (100 * WAD) / infSupply;
+        (uint256 series, uint256 epoch) = _requestAndSettle(userInf);
         vm.prank(ALICE);
-        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 100 * WAD, ALICE);
-        assertEq(collateralOut, 100 * WAD);
-        assertEq(inf.totalSupply(), 0);
-        assertEq(reserve.reserveCollateral(), 0);
+        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, expectedCollateral, ALICE);
+        assertEq(collateralOut, expectedCollateral);
+        assertEq(inf.balanceOf(ALICE), 0);
+        assertEq(inf.totalSupply(), reserve.MINIMUM_INF_LIQUIDITY());
+        assertEq(inf.balanceOf(address(reserve)), reserve.MINIMUM_INF_LIQUIDITY());
+        assertEq(reserve.reserveCollateral(), 100 * WAD - expectedCollateral);
     }
 
-    function testFullNoDebtDefundDoesNotTrapRoundingDust() public {
+    function testFullUserNoDebtDefundLeavesMinimumLiquidityBackingDespitePriceChange() public {
         _bootstrap();
         oracle.setPrice(3_333 * WAD + 17);
-        uint256 infSupply = inf.totalSupply();
-        (uint256 series, uint256 epoch) = _requestAndSettle(infSupply);
+        uint256 expectedCollateral = inf.balanceOf(ALICE) * (100 * WAD) / inf.totalSupply();
+        (uint256 series, uint256 epoch) = _requestAndSettle(inf.balanceOf(ALICE));
 
         vm.prank(ALICE);
-        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 100 * WAD, ALICE);
+        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, expectedCollateral, ALICE);
 
-        assertEq(collateralOut, 100 * WAD);
-        assertEq(reserve.reserveCollateral(), 0);
+        assertEq(collateralOut, expectedCollateral);
+        assertEq(reserve.reserveCollateral(), 100 * WAD - expectedCollateral);
+        assertEq(inf.totalSupply(), reserve.MINIMUM_INF_LIQUIDITY());
     }
 
     function testCannotRedeemWithoutDebtOrDefundWithoutEquity() public {
@@ -290,7 +295,7 @@ contract NaNReserveTest is Test {
 
         assertEq(infOut, quoted);
         assertEq(address(reserve.inf()), originalInf);
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
         assertEq(inf.totalSupply(), 300_000 * WAD + infOut);
         assertEq(reserve.equityUsd(), 15_000 * WAD);
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.NoDebt));
@@ -299,7 +304,7 @@ contract NaNReserveTest is Test {
     function testFreshEmptyReserveCanBeFunded() public {
         vm.prank(ALICE);
         uint256 infOut = reserve.fund(10 * WAD, 0, ALICE);
-        assertEq(infOut, 30_000 * WAD);
+        assertEq(infOut, 30_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
         assertEq(inf.balanceOf(ALICE), infOut);
     }
 
@@ -312,7 +317,7 @@ contract NaNReserveTest is Test {
         assertEq(reserve.fund(10 * WAD, quote, BOB), quote);
         assertGt(quote, 0);
         assertEq(reserve.infPriceUsd(), 0);
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
     }
 
     function testLargeRecapitalizationRestoresHealthyRatioWithoutReplacingInf() public {
@@ -331,7 +336,7 @@ contract NaNReserveTest is Test {
         assertEq(infOut, quote);
         assertEq(newInf.balanceOf(BOB), infOut);
         assertEq(newInf.totalSupply(), 300_000 * WAD + infOut);
-        assertEq(newInf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(newInf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
         assertEq(reserve.equityUsd(), 297_540 * WAD);
         assertEq(uint256(reserve.health()), uint256(NaNReserve.Health.Healthy));
         assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
@@ -377,7 +382,7 @@ contract NaNReserveTest is Test {
         (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
         assertGt(collateralOut, 0);
         assertEq(refundedInf, 0);
-        assertEq(inf.balanceOf(ALICE), 299_999 * WAD);
+        assertEq(inf.balanceOf(ALICE), 299_999 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
     }
 
     function testRejectsZeroOraclePrice() public {

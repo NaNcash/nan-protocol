@@ -23,8 +23,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_FEE_BPS = 1_000;
-    /// @notice Every funding deposit must mint at least one whole INF to bound share-rounding loss.
-    uint256 public constant MIN_INF_ISSUANCE = WAD;
+    /// @notice One whole INF (1e18 base units), permanently held by the reserve after bootstrap.
+    uint256 public constant MINIMUM_INF_LIQUIDITY = WAD;
     uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
     uint256 public constant MAX_INF_WITHDRAWAL_DELAY = 30 days;
     uint256 public constant MIN_INF_WITHDRAWAL_EPOCH = 1 hours;
@@ -110,6 +110,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     mapping(uint256 series => mapping(uint256 epoch => WithdrawalEpoch)) public withdrawalEpochs;
     mapping(uint256 series => mapping(uint256 epoch => mapping(address account => WithdrawalRequest))) public
         withdrawalRequests;
+    /// @notice Unfilled INF retained after claim; already mature and available for requester-only retry or cancellation.
+    mapping(uint256 series => mapping(uint256 epoch => mapping(address account => uint256))) public pendingDefundInf;
+    /// @notice Expiration refunds INF; a valid zero-fill settlement instead preserves a mature exit.
+    mapping(uint256 series => mapping(uint256 epoch => bool)) public expiredWithdrawalEpochs;
     /// @notice Settled withdrawal collateral is excluded from reserve backing until users claim it.
     uint256 public claimableWithdrawalCollateral;
 
@@ -118,6 +122,17 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     event WithdrawalRequested(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infIn);
     event WithdrawalSettled(uint256 indexed series, uint256 indexed epoch, uint256 filledInf, uint256 collateralOut);
     event WithdrawalExpired(uint256 indexed series, uint256 indexed epoch);
+    event WithdrawalRetained(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infIn);
+    event WithdrawalCancelled(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infOut);
+    event WithdrawalRetried(
+        address indexed account,
+        address indexed recipient,
+        uint256 indexed series,
+        uint256 epoch,
+        uint256 filledInf,
+        uint256 collateralOut,
+        uint256 remainingInf
+    );
     event WithdrawalClaimed(
         address indexed account,
         address indexed recipient,
@@ -385,7 +400,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Quote same-token issuance using the current primary price, state and timestamp.
-    /// @dev Reverts with Slippage if output would be below MIN_INF_ISSUANCE, matching fund.
     function previewFund(uint256 collateralIn) external view returns (uint256) {
         if (collateralIn == 0) revert ZeroAmount();
         uint256 price = collateralPriceUsd();
@@ -413,7 +427,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     /// @notice Add junior capital at the greater of real NAV and the recovery issuance floor.
     /// @dev Partial funding is allowed even at zero equity. Existing INF shares are never retired.
-    ///      Every deposit must mint at least MIN_INF_ISSUANCE, including bootstrap and recovery.
+    ///      Bootstrap output excludes MINIMUM_INF_LIQUIDITY, locked permanently in this reserve.
     function fund(uint256 collateralIn, uint256 minInfOut, address recipient)
         external
         nonReentrant
@@ -431,8 +445,11 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         infOut = _fundingQuote(
             _collateralToUsd(collateralIn, price), reserveBefore, debt, infSupply, _decayedFloor(recovery)
         );
-        if (infOut < minInfOut) revert Slippage();
+        if (infOut == 0 || infOut < minInfOut) revert Slippage();
         _pullExact(collateralIn);
+        // The reserve cannot request withdrawals or approve transfers of its own INF.
+        // Settlement burns only user-requested shares, leaving this liquidity locked forever.
+        if (infSupply == 0) inf.mint(address(this), MINIMUM_INF_LIQUIDITY);
         inf.mint(recipient, infOut);
         _syncRecovery(_collateralToUsd(reserveCollateral(), price), debt, inf.totalSupply());
 
@@ -463,7 +480,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
-    /// @dev A cohort can be partially filled, with the unfilled INF returned during claim.
+    /// @dev A cohort can be partially or zero filled; unfilled INF retains its maturity after claim.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -496,14 +513,16 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         if (block.timestamp < uint256(requestEpoch.maturity) + INF_SETTLEMENT_WINDOW) revert WithdrawalNotExpired();
 
         requestEpoch.settled = true;
+        expiredWithdrawalEpochs[series][epoch] = true;
         emit WithdrawalExpired(series, epoch);
     }
 
-    /// @notice Claim fixed collateral and any INF not filled by the settled epoch.
+    /// @notice Claim fixed collateral, retaining unfilled INF for retry; expired cohorts refund INF instead.
+    /// @dev The second return value is unfilled INF, escrowed for settled cohorts or refunded for expired ones.
     function claimDefund(uint256 series, uint256 epoch, uint256 minCollateralOut, address recipient)
         external
         nonReentrant
-        returns (uint256 collateralOut, uint256 refundedInf)
+        returns (uint256 collateralOut, uint256 unfilledInf)
     {
         if (recipient == address(0)) revert ZeroAddress();
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
@@ -512,24 +531,72 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 requestedInf = request.infAmount;
         if (requestedInf == 0) revert NoWithdrawalRequest();
 
-        // Each request owns a disjoint interval of the epoch. Difference-of-prefixes
-        // distributes every unit exactly without a first/last claimant advantage.
-        uint256 end = request.start + requestedInf;
-        uint256 filledInf = Math.mulDiv(end, requestEpoch.filledInf, requestEpoch.requestedInf)
-            - Math.mulDiv(request.start, requestEpoch.filledInf, requestEpoch.requestedInf);
-        collateralOut = Math.mulDiv(end, requestEpoch.collateralOut, requestEpoch.requestedInf)
-            - Math.mulDiv(request.start, requestEpoch.collateralOut, requestEpoch.requestedInf);
+        // Map each request to a disjoint filled-INF interval, then allocate collateral
+        // over that same interval. Prefix differences conserve both totals regardless
+        // of claim order, and a request with no filled INF receives no collateral.
+        uint256 filledInf;
+        {
+            uint256 end = request.start + requestedInf;
+            uint256 filledStart = Math.mulDiv(request.start, requestEpoch.filledInf, requestEpoch.requestedInf);
+            uint256 filledEnd = Math.mulDiv(end, requestEpoch.filledInf, requestEpoch.requestedInf);
+            filledInf = filledEnd - filledStart;
+            if (requestEpoch.filledInf != 0) {
+                collateralOut = Math.mulDiv(filledEnd, requestEpoch.collateralOut, requestEpoch.filledInf)
+                    - Math.mulDiv(filledStart, requestEpoch.collateralOut, requestEpoch.filledInf);
+            }
+        }
         if (collateralOut < minCollateralOut) revert Slippage();
-        refundedInf = requestedInf - filledInf;
+        unfilledInf = requestedInf - filledInf;
 
         delete withdrawalRequests[series][epoch][msg.sender];
         claimableWithdrawalCollateral -= collateralOut;
 
-        if (refundedInf != 0) IERC20(address(requestEpoch.token)).safeTransfer(msg.sender, refundedInf);
+        uint256 refundedInf;
+        if (unfilledInf != 0) {
+            if (expiredWithdrawalEpochs[series][epoch]) {
+                refundedInf = unfilledInf;
+                IERC20(address(requestEpoch.token)).safeTransfer(msg.sender, refundedInf);
+            } else {
+                pendingDefundInf[series][epoch][msg.sender] = unfilledInf;
+                emit WithdrawalRetained(msg.sender, series, epoch, unfilledInf);
+            }
+        }
         if (collateralOut != 0) collateral.safeTransfer(recipient, collateralOut);
 
         emit WithdrawalClaimed(msg.sender, recipient, series, epoch, filledInf, collateralOut, refundedInf);
         if (filledInf != 0) emit Defunded(msg.sender, recipient, filledInf, collateralOut);
+    }
+
+    /// @notice Retry the caller's retained, already-mature INF at the current quote and target ratio.
+    /// @dev Claim the cohort first. Retries have no expiry, fill individually, and pay collateral immediately.
+    function retryDefund(uint256 series, uint256 epoch, uint256 minCollateralOut, address recipient)
+        external
+        nonReentrant
+        returns (uint256 collateralOut, uint256 remainingInf)
+    {
+        if (recipient == address(0)) revert ZeroAddress();
+        uint256 requestedInf = pendingDefundInf[series][epoch][msg.sender];
+        if (requestedInf == 0) revert NoWithdrawalRequest();
+        uint256 filledInf;
+        (filledInf, collateralOut) = _withdrawalQuote(requestedInf);
+        if (collateralOut == 0 || collateralOut < minCollateralOut) revert Slippage();
+
+        remainingInf = requestedInf - filledInf;
+        pendingDefundInf[series][epoch][msg.sender] = remainingInf;
+        inf.burn(address(this), filledInf);
+        collateral.safeTransfer(recipient, collateralOut);
+
+        emit WithdrawalRetried(msg.sender, recipient, series, epoch, filledInf, collateralOut, remainingInf);
+        emit Defunded(msg.sender, recipient, filledInf, collateralOut);
+    }
+
+    /// @notice Cancel the caller's retained INF after claiming the cohort. No oracle or new delay is required.
+    function cancelDefund(uint256 series, uint256 epoch) external nonReentrant returns (uint256 refundedInf) {
+        refundedInf = pendingDefundInf[series][epoch][msg.sender];
+        if (refundedInf == 0) revert NoWithdrawalRequest();
+        delete pendingDefundInf[series][epoch][msg.sender];
+        IERC20(address(inf)).safeTransfer(msg.sender, refundedInf);
+        emit WithdrawalCancelled(msg.sender, series, epoch, refundedInf);
     }
 
     /// @notice Deposit wstETH and mint NaN at oracle value minus the explicit mint fee.
@@ -606,13 +673,13 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     // -------------------------------------------------------------------------
 
     function _withdrawalQuote(uint256 requestedInf) internal returns (uint256 filledInf, uint256 collateralOut) {
-        uint256 supply = inf.totalSupply(); // Includes INF locked by all unsettled cohorts.
+        uint256 supply = inf.totalSupply(); // Includes permanent minimum liquidity and all unsettled cohorts.
         uint256 reserve = reserveCollateral();
         uint256 debt = debtUsd();
 
         if (debt == 0) {
             filledInf = requestedInf;
-            collateralOut = requestedInf == supply ? reserve : Math.mulDiv(requestedInf, reserve, supply);
+            collateralOut = Math.mulDiv(requestedInf, reserve, supply);
             return (filledInf, collateralOut);
         }
 
@@ -650,23 +717,19 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     function _fundingQuote(uint256 usdIn, uint256 reserve, uint256 debt, uint256 supply, uint256 floor)
         internal
         pure
-        returns (uint256 infOut)
+        returns (uint256)
     {
         if (supply == 0) {
             if (debt != 0) revert NoJuniorCapital();
-            infOut = usdIn;
-        } else {
-            uint256 equity = reserve > debt ? reserve - debt : 0;
-            if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
-                infOut = Math.mulDiv(usdIn, WAD, floor);
-            } else {
-                // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
-                infOut = Math.mulDiv(usdIn, supply, equity);
-            }
+            if (usdIn <= MINIMUM_INF_LIQUIDITY) revert Slippage();
+            return usdIn - MINIMUM_INF_LIQUIDITY;
         }
-        // A preview-based minInfOut alone accepts severely rounded quotes after a donation.
-        // At least 1e18 base units limits share rounding to less than 1e-18 of the exact quote.
-        if (infOut < MIN_INF_ISSUANCE) revert Slippage();
+        uint256 equity = reserve > debt ? reserve - debt : 0;
+        if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
+            return Math.mulDiv(usdIn, WAD, floor);
+        }
+        // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
+        return Math.mulDiv(usdIn, supply, equity);
     }
 
     function _recoveryAt(uint256 reserve, uint256 debt, uint256 supply) internal view returns (Recovery memory next) {
@@ -677,8 +740,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
             if (
                 _withinDebtRatio(debt, reserve, next.exitDebtRatioBps)
                     && Math.mulDiv(equity, WAD, supply) >= _decayedFloor(next)
-            ) return Recovery(0, 0, 0, 0);
-        } else if (!_withinMaxDebtRatio(debt, reserve) || reserve == 0) {
+            ) next = Recovery(0, 0, 0, 0);
+        }
+        // An ended episode may already need replacement under a tighter current maximum.
+        if (next.initialPriceUsd == 0 && (!_withinMaxDebtRatio(debt, reserve) || reserve == 0)) {
             // Price at the max-ratio boundary, not the potentially near-zero crash NAV.
             uint256 boundaryEquity = Math.mulDiv(debt, BPS - maxDebtRatioBps, maxDebtRatioBps, Math.Rounding.Ceil);
             uint256 initialPrice =
@@ -692,7 +757,13 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     function _syncRecovery(uint256 reserve, uint256 debt, uint256 supply) internal {
         Recovery memory next = _recoveryAt(reserve, debt, supply);
-        if (recovery.initialPriceUsd == 0 && next.initialPriceUsd != 0) {
+        // Active-to-active replacement is possible only when the exit ratio changed:
+        // the old ratio is satisfied while the current maximum is still breached.
+        if (
+            next.initialPriceUsd != 0
+                && (recovery.initialPriceUsd == 0 || recovery.exitDebtRatioBps != next.exitDebtRatioBps)
+        ) {
+            if (recovery.initialPriceUsd != 0) emit RecoveryEnded();
             recovery = next;
             emit RecoveryStarted(next.initialPriceUsd, next.halvingPeriod, next.exitDebtRatioBps);
         } else if (recovery.initialPriceUsd != 0 && next.initialPriceUsd == 0) {

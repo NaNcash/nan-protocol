@@ -156,7 +156,7 @@ contract OracleFallbackTest is Test {
         vm.prank(BOB);
         uint256 out = reserve.fund(WAD, 0, BOB);
         assertEq(out, 3_000 * WAD);
-        assertEq(reserve.inf().balanceOf(ALICE), oldSupply);
+        assertEq(reserve.inf().balanceOf(ALICE), oldSupply - reserve.MINIMUM_INF_LIQUIDITY());
         assertEq(reserve.inf().totalSupply(), oldSupply + out);
         assertEq(reserve.juniorSeries(), 1);
     }

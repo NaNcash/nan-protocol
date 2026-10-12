@@ -29,6 +29,7 @@ const reserveAbi = parseAbi([
   'function currentWithdrawalEpoch() view returns (uint256, uint256)',
   'function withdrawalEpochs(uint256, uint256) view returns (address, uint256, uint256, uint256, bool, uint64)',
   'function withdrawalRequests(uint256, uint256, address) view returns (uint256, uint256)',
+  'function pendingDefundInf(uint256, uint256, address) view returns (uint256)',
   'function fund(uint256, uint256, address) returns (uint256)',
   'function mint(uint256, uint256, address) returns (uint256)',
   'function redeem(uint256, uint256, address) returns (uint256)',
@@ -36,6 +37,8 @@ const reserveAbi = parseAbi([
   'function settleDefundEpoch(uint256, uint256)',
   'function expireDefundEpoch(uint256, uint256)',
   'function claimDefund(uint256, uint256, uint256, address) returns (uint256, uint256)',
+  'function retryDefund(uint256, uint256, uint256, address) returns (uint256, uint256)',
+  'function cancelDefund(uint256, uint256) returns (uint256)',
   'function checkpointRecovery()',
   'function setInfWithdrawalDelay(uint256)',
   'function setRecoveryHalvingPeriod(uint256)',
@@ -232,21 +235,38 @@ async function showWithdrawals(now) {
   let shown = 0
   for (const event of [...events].reverse()) {
     const { series, epoch } = event.args
-    const [, requested] = await reserveRead('withdrawalRequests', [series, epoch, account])
-    if (requested === 0n) continue
+    const [[, requested], retained] = await Promise.all([
+      reserveRead('withdrawalRequests', [series, epoch, account]),
+      reserveRead('pendingDefundInf', [series, epoch, account]),
+    ])
+    if (requested === 0n && retained === 0n) continue
     shown++
     const [, , , , settled, maturity] = await reserveRead('withdrawalEpochs', [series, epoch])
     const row = document.createElement('div')
     row.className = 'withdrawal'
     const heading = document.createElement('strong')
-    heading.textContent = `Epoch ${epoch} · ${amount(requested)} INF`
+    heading.textContent = `Epoch ${epoch} · ${amount(requested || retained)} INF`
     const detail = document.createElement('span')
-    detail.textContent = settled ? 'Settled — claim now' : `Matures ${date(maturity)}`
+    detail.textContent = retained > 0n ? 'Unfilled INF · already mature · retry or cancel for an INF refund' : settled ? 'Settled — claim now' : `Matures ${date(maturity)}`
     row.append(heading, detail)
     const actions = document.createElement('div')
     actions.className = 'inline-actions'
     const expiry = BigInt(maturity) + 86_400n
-    if (settled) {
+    if (retained > 0n) {
+      const minimum = document.createElement('input')
+      minimum.type = 'number'
+      minimum.min = '0'
+      minimum.step = 'any'
+      minimum.placeholder = 'Minimum wstETH payout'
+      minimum.setAttribute('aria-label', `Minimum wstETH payout for epoch ${epoch}`)
+      actions.append(minimum)
+      actions.append(requestButton('Retry withdrawal', () => execute('Retry withdrawal', async () => {
+        const minOut = parseUnits(minimum.value || '0', 18)
+        if (minOut <= 0n) throw new Error('Enter a minimum wstETH payout greater than zero')
+        return reserveWrite('retryDefund', [series, epoch, minOut, account])
+      })))
+      actions.append(requestButton('Cancel & refund INF', () => execute('Cancel withdrawal', async () => reserveWrite('cancelDefund', [series, epoch]))))
+    } else if (settled) {
       actions.append(requestButton('Claim', () => execute('Claim', async () => reserveWrite('claimDefund', [series, epoch, 0n, account]))))
     } else if (now >= expiry) {
       actions.append(requestButton('Expire & refund', () => execute('Expire cohort', async () => reserveWrite('expireDefundEpoch', [series, epoch]))))

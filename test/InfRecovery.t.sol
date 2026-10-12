@@ -102,7 +102,7 @@ contract InfRecoveryTest is Test {
         vm.prank(BOB);
         uint256 infOut = reserve.fund(WAD, 0, BOB);
         assertEq(infOut, 1_500 * WAD * WAD);
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
         assertEq(address(reserve.inf()), address(inf));
         assertEq(reserve.infPriceUsd(), 0);
     }
@@ -114,7 +114,7 @@ contract InfRecoveryTest is Test {
         reserve.checkpointRecovery();
         (, uint256 initial,,) = reserve.recovery();
         assertEq(initial, 0);
-        assertEq(inf.balanceOf(ALICE), inf.totalSupply());
+        assertEq(inf.balanceOf(ALICE) + reserve.MINIMUM_INF_LIQUIDITY(), inf.totalSupply());
         assertEq(reserve.recoveryFloorPriceUsd(), 0);
         assertEq(reserve.equityUsd(), 300_540 * WAD);
     }
@@ -292,6 +292,98 @@ contract InfRecoveryTest is Test {
         assertEq(newExit, 6_000);
     }
 
+    function _prepareReplacementRecovery() internal {
+        _crash();
+        vm.warp(block.timestamp + 12 hours);
+        reserve.setDebtRatios(4_000, 5_000, 6_000);
+        reserve.setRecoveryHalvingPeriod(7 days);
+        oracle.setPrice(3_000 * WAD);
+        // The old 65% exit threshold is met, but the new 60% maximum is breached.
+        assertLe(reserve.debtRatioBps(), 6_500);
+        assertGt(reserve.debtRatioBps(), 6_000);
+    }
+
+    function testFundingMatchesCheckpointWhenRecoveryEpisodeIsReplaced() public {
+        _prepareReplacementRecovery();
+        uint256 amount = 169.55 ether;
+        uint256 quote = reserve.previewFund(amount);
+        uint256 snapshot = vm.snapshotState();
+        vm.prank(BOB);
+        uint256 direct = reserve.fund(amount, quote, BOB);
+        oracle.setPrice(4_000 * WAD);
+        uint256 directClaim = Math.mulDiv(reserve.equityUsd(), inf.balanceOf(ALICE), inf.totalSupply());
+
+        assertTrue(vm.revertToStateAndDelete(snapshot));
+        reserve.checkpointRecovery();
+        assertEq(reserve.previewFund(amount), quote);
+        vm.prank(BOB);
+        uint256 checkpointed = reserve.fund(amount, 0, BOB);
+        assertEq(direct, checkpointed, "checkpoint must not change issuance at the same price and time");
+        assertEq(direct, 424_299_299299299299299299);
+        oracle.setPrice(4_000 * WAD);
+        assertEq(Math.mulDiv(reserve.equityUsd(), inf.balanceOf(ALICE), inf.totalSupply()), directClaim);
+    }
+
+    function testViewsProjectReplacementWithoutPersistingIt() public {
+        _prepareReplacementRecovery();
+        (uint256 oldStart, uint256 oldInitial, uint256 oldPeriod, uint256 oldExit) = reserve.recovery();
+        uint256 boundaryEquity = Math.mulDiv(reserve.debtUsd(), 4_000, 6_000, Math.Rounding.Ceil);
+        uint256 expectedFloor = Math.mulDiv(boundaryEquity, WAD, inf.totalSupply(), Math.Rounding.Ceil);
+        assertGt(expectedFloor, reserve.infPriceUsd());
+        assertEq(reserve.recoveryFloorPriceUsd(), expectedFloor);
+        assertEq(reserve.fundingPriceUsd(), expectedFloor);
+        assertEq(reserve.previewFund(WAD), Math.mulDiv(3_000 * WAD, WAD, expectedFloor));
+
+        vm.warp(block.timestamp + 1 days);
+        assertEq(reserve.recoveryFloorPriceUsd(), expectedFloor, "views must not start replacement decay");
+        (uint256 start, uint256 initial, uint256 period, uint256 exitRatio) = reserve.recovery();
+        assertEq(start, oldStart);
+        assertEq(initial, oldInitial);
+        assertEq(period, oldPeriod);
+        assertEq(exitRatio, oldExit);
+    }
+
+    function testCheckpointReplacesEpisodeAndEmitsEndThenStart() public {
+        _prepareReplacementRecovery();
+        uint256 boundaryEquity = Math.mulDiv(reserve.debtUsd(), 4_000, 6_000, Math.Rounding.Ceil);
+        uint256 expectedFloor = Math.mulDiv(boundaryEquity, WAD, inf.totalSupply(), Math.Rounding.Ceil);
+        vm.expectEmit(false, false, false, true, address(reserve));
+        emit NaNReserve.RecoveryEnded();
+        vm.expectEmit(false, false, false, true, address(reserve));
+        emit NaNReserve.RecoveryStarted(expectedFloor, 7 days, 6_000);
+        reserve.checkpointRecovery();
+        (uint256 start, uint256 initial, uint256 period, uint256 exitRatio) = reserve.recovery();
+        assertEq(start, block.timestamp);
+        assertEq(initial, expectedFloor);
+        assertEq(period, 7 days);
+        assertEq(exitRatio, 6_000);
+        assertEq(reserve.recoveryFloorPriceUsd(), expectedFloor);
+
+        vm.recordLogs();
+        reserve.checkpointRecovery();
+        assertEq(vm.getRecordedLogs().length, 0, "unchanged episode must not emit another transition");
+        vm.warp(start + 7 days);
+        assertEq(reserve.recoveryFloorPriceUsd(), expectedFloor >> 1);
+    }
+
+    function testRejectedFundingDoesNotReplaceEpisode() public {
+        _prepareReplacementRecovery();
+        (uint256 oldStart, uint256 oldInitial, uint256 oldPeriod, uint256 oldExit) = reserve.recovery();
+        uint256 balance = collateral.balanceOf(BOB);
+        uint256 supply = inf.totalSupply();
+        uint256 quote = reserve.previewFund(WAD);
+        vm.prank(BOB);
+        vm.expectRevert(NaNReserve.Slippage.selector);
+        reserve.fund(WAD, quote + 1, BOB);
+        (uint256 start, uint256 initial, uint256 period, uint256 exitRatio) = reserve.recovery();
+        assertEq(start, oldStart);
+        assertEq(initial, oldInitial);
+        assertEq(period, oldPeriod);
+        assertEq(exitRatio, oldExit);
+        assertEq(collateral.balanceOf(BOB), balance);
+        assertEq(inf.totalSupply(), supply);
+    }
+
     function testHalvingConfigurationRequiresAuthorizerAndBounds() public {
         assertEq(reserve.recoveryHalvingPeriod(), 1 days);
         vm.prank(ALICE);
@@ -349,11 +441,8 @@ contract InfRecoveryTest is Test {
         reserve.checkpointRecovery();
         vm.warp(block.timestamp + bound(uint256(rawTime), 0, 300 days));
         uint256 maxAmount = Math.min(400 * WAD, reserve.maxFundableUsd() * WAD / price);
-        // Each tranche must mint a whole INF. One extra collateral wei covers NAV rounding
-        // after the first tranche, while keeping the fuzz test focused on successful splits.
-        uint256 minAmount = Math.mulDiv(reserve.fundingPriceUsd(), WAD, price, Math.Rounding.Ceil) + 1;
-        uint256 amount = bound(uint256(rawAmount), 2 * minAmount, maxAmount);
-        uint256 split = bound(uint256(rawSplit), minAmount, amount - minAmount);
+        uint256 amount = bound(uint256(rawAmount), 2e12, maxAmount);
+        uint256 split = bound(uint256(rawSplit), 1e12, amount - 1e12);
         uint256 snapshot = vm.snapshotState();
         vm.prank(BOB);
         uint256 whole = reserve.fund(amount, 0, BOB);
@@ -363,7 +452,7 @@ contract InfRecoveryTest is Test {
         parts += reserve.fund(amount - split, 0, BOB);
         vm.stopPrank();
         assertLe(parts, whole);
-        assertEq(inf.balanceOf(ALICE), 300_000 * WAD);
+        assertEq(inf.balanceOf(ALICE), 300_000 * WAD - reserve.MINIMUM_INF_LIQUIDITY());
     }
 
     function testFuzzDecayIsMonotoneAndPositive(uint32 rawFirst, uint32 rawSecond) public {
@@ -377,5 +466,44 @@ contract InfRecoveryTest is Test {
         uint256 b = reserve.recoveryFloorPriceUsd();
         assertGe(a, b);
         assertGe(b, 1);
+    }
+
+    function testFuzzReplacementFundingIsIndependentOfCheckpoint(
+        uint16 rawPrice,
+        uint16 rawMax,
+        uint32 rawTime,
+        uint32 rawPeriod,
+        uint96 rawAmount
+    ) public {
+        _crash();
+        vm.warp(block.timestamp + bound(uint256(rawTime), 0, 30 days));
+        // Every rebound satisfies the old exit ratio and catches up to its floor.
+        uint256 price = bound(uint256(rawPrice), 2_965, 4_000) * WAD;
+        oracle.setPrice(price);
+        uint256 newMax = bound(uint256(rawMax), 3_002, reserve.debtRatioBps() - 1);
+        reserve.setDebtRatios(3_000, (3_000 + newMax) / 2, newMax);
+        uint256 newPeriod = bound(uint256(rawPeriod), 1 hours, 30 days);
+        reserve.setRecoveryHalvingPeriod(newPeriod);
+        uint256 amount = bound(uint256(rawAmount), 1e12, reserve.maxFundableUsd() * WAD / price);
+        uint256 quote = reserve.previewFund(amount);
+        uint256 floor = reserve.recoveryFloorPriceUsd();
+        assertGt(floor, reserve.infPriceUsd());
+        uint256 snapshot = vm.snapshotState();
+
+        vm.prank(BOB);
+        uint256 direct = reserve.fund(amount, quote, BOB);
+        assertEq(direct, quote);
+        (uint256 start, uint256 initial, uint256 period, uint256 exitRatio) = reserve.recovery();
+        assertEq(start, block.timestamp);
+        assertEq(initial, floor);
+        assertEq(period, newPeriod);
+        assertEq(exitRatio, newMax);
+
+        assertTrue(vm.revertToStateAndDelete(snapshot));
+        reserve.checkpointRecovery();
+        assertEq(reserve.previewFund(amount), quote);
+        assertEq(reserve.recoveryFloorPriceUsd(), floor);
+        vm.prank(BOB);
+        assertEq(reserve.fund(amount, quote, BOB), direct);
     }
 }

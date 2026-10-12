@@ -20,7 +20,6 @@ contract NaNReserveHandler is Test {
     uint256 public lastWithdrawalSeries;
     uint256 public lastWithdrawalEpoch;
     bool public hasWithdrawal;
-    bool public fundingOutputsMeetMinimum = true;
     uint256[] public withdrawalEpochIds;
     uint256[] public withdrawalMaturities;
 
@@ -43,9 +42,7 @@ contract NaNReserveHandler is Test {
 
     function fund(uint96 rawAmount) external {
         uint256 amount = bound(uint256(rawAmount), 1e12, 500 * WAD);
-        try reserve.fund(amount, 0, address(this)) returns (uint256 infOut) {
-            if (infOut < reserve.MIN_INF_ISSUANCE()) fundingOutputsMeetMinimum = false;
-        } catch {}
+        try reserve.fund(amount, 0, address(this)) {} catch {}
     }
 
     function mint(uint96 rawAmount) external {
@@ -83,6 +80,18 @@ contract NaNReserveHandler is Test {
         try reserve.claimDefund(series, epoch, 0, address(this)) {
             hasWithdrawal = false;
         } catch {}
+    }
+
+    function retryWithdrawal(uint256 rawIndex) external {
+        if (withdrawalEpochIds.length == 0) return;
+        uint256 epoch = withdrawalEpochIds[rawIndex % withdrawalEpochIds.length];
+        try reserve.retryDefund(reserve.juniorSeries(), epoch, 1, address(this)) {} catch {}
+    }
+
+    function cancelWithdrawal(uint256 rawIndex) external {
+        if (withdrawalEpochIds.length == 0) return;
+        uint256 epoch = withdrawalEpochIds[rawIndex % withdrawalEpochIds.length];
+        try reserve.cancelDefund(reserve.juniorSeries(), epoch) {} catch {}
     }
 
     function redeem(uint96 rawAmount) external {
@@ -188,7 +197,7 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         handler.acceptOwnership();
         originalInf = address(reserve.inf());
 
-        bytes4[] memory selectors = new bytes4[](15);
+        bytes4[] memory selectors = new bytes4[](17);
         selectors[0] = handler.fund.selector;
         selectors[1] = handler.mint.selector;
         selectors[2] = handler.requestDefund.selector;
@@ -204,6 +213,8 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         selectors[12] = handler.swapOracle.selector;
         selectors[13] = handler.crash.selector;
         selectors[14] = handler.recover.selector;
+        selectors[15] = handler.retryWithdrawal.selector;
+        selectors[16] = handler.cancelWithdrawal.selector;
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
@@ -254,10 +265,6 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         assertEq(reserve.debtUsd(), reserve.nan().totalSupply());
     }
 
-    function invariantSuccessfulFundingAlwaysMeetsMinimumIssuance() public view {
-        assertTrue(handler.fundingOutputsMeetMinimum());
-    }
-
     function invariantInfAddressAndNamespaceNeverChange() public view {
         assertEq(address(reserve.inf()), originalInf);
         assertEq(reserve.juniorSeries(), 1);
@@ -277,6 +284,11 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
 
     function invariantOutstandingDebtAlwaysHasActiveJuniorCapital() public view {
         if (reserve.debtUsd() != 0) assertGt(reserve.inf().totalSupply(), 0);
+    }
+
+    function invariantMinimumInfLiquidityRemainsLocked() public view {
+        assertGe(reserve.inf().totalSupply(), reserve.MINIMUM_INF_LIQUIDITY());
+        assertGe(reserve.inf().balanceOf(address(reserve)), reserve.MINIMUM_INF_LIQUIDITY());
     }
 
     function invariantHealthyStateRespectsConfiguredDebtRatio() public view {
@@ -324,6 +336,22 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         address configuredOracle = address(reserve.oracle());
         assertTrue(configuredOracle == address(oracle) || configuredOracle == address(alternateOracle));
         assertGt(reserve.collateralPriceUsd(), 0);
+    }
+
+    function invariantWithdrawalEscrowEqualsUnfilledRequestsAndRetainedInf() public view {
+        uint256 escrow;
+        uint256 series = reserve.juniorSeries();
+        uint256 count = handler.withdrawalCount();
+        for (uint256 i; i < count; ++i) {
+            uint256 epoch = handler.withdrawalEpochIds(i);
+            (, uint256 requested) = reserve.withdrawalRequests(series, epoch, address(handler));
+            if (requested != 0) {
+                (,, uint256 filledInf,,,) = reserve.withdrawalEpochs(series, epoch);
+                escrow += requested - filledInf;
+            }
+            escrow += reserve.pendingDefundInf(series, epoch, address(handler));
+        }
+        assertEq(reserve.inf().balanceOf(address(reserve)), reserve.MINIMUM_INF_LIQUIDITY() + escrow);
     }
 
     function invariantExistingWithdrawalCohortsKeepTheirMaturity() public view {
