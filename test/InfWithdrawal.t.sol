@@ -312,15 +312,19 @@ contract InfWithdrawalTest is Test {
     }
 
     function testDebtFreeWithdrawalDoesNotNeedOracle() public {
-        uint256 infSupply = inf.totalSupply();
+        uint256 userInf = inf.balanceOf(ALICE);
+        uint256 expectedCollateral = userInf * (100 * WAD) / inf.totalSupply();
         vm.prank(ALICE);
-        (uint256 series, uint256 epoch) = reserve.requestDefund(infSupply);
+        (uint256 series, uint256 epoch) = reserve.requestDefund(userInf);
         oracle.setPrice(0);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         reserve.settleDefundEpoch(series, epoch);
         vm.prank(ALICE);
-        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 100 * WAD, ALICE);
-        assertEq(collateralOut, 100 * WAD);
+        (uint256 collateralOut,) = reserve.claimDefund(series, epoch, expectedCollateral, ALICE);
+        assertEq(collateralOut, expectedCollateral);
+        assertEq(inf.totalSupply(), reserve.MINIMUM_INF_LIQUIDITY());
+        assertEq(inf.balanceOf(address(reserve)), reserve.MINIMUM_INF_LIQUIDITY());
+        assertEq(reserve.reserveCollateral(), 100 * WAD - expectedCollateral);
     }
 
     function testOracleFailureAllowsExpiryAndRefund() public {
