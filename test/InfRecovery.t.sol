@@ -467,4 +467,43 @@ contract InfRecoveryTest is Test {
         assertGe(a, b);
         assertGe(b, 1);
     }
+
+    function testFuzzReplacementFundingIsIndependentOfCheckpoint(
+        uint16 rawPrice,
+        uint16 rawMax,
+        uint32 rawTime,
+        uint32 rawPeriod,
+        uint96 rawAmount
+    ) public {
+        _crash();
+        vm.warp(block.timestamp + bound(uint256(rawTime), 0, 30 days));
+        // Every rebound satisfies the old exit ratio and catches up to its floor.
+        uint256 price = bound(uint256(rawPrice), 2_965, 4_000) * WAD;
+        oracle.setPrice(price);
+        uint256 newMax = bound(uint256(rawMax), 3_002, reserve.debtRatioBps() - 1);
+        reserve.setDebtRatios(3_000, (3_000 + newMax) / 2, newMax);
+        uint256 newPeriod = bound(uint256(rawPeriod), 1 hours, 30 days);
+        reserve.setRecoveryHalvingPeriod(newPeriod);
+        uint256 amount = bound(uint256(rawAmount), 1e12, reserve.maxFundableUsd() * WAD / price);
+        uint256 quote = reserve.previewFund(amount);
+        uint256 floor = reserve.recoveryFloorPriceUsd();
+        assertGt(floor, reserve.infPriceUsd());
+        uint256 snapshot = vm.snapshotState();
+
+        vm.prank(BOB);
+        uint256 direct = reserve.fund(amount, quote, BOB);
+        assertEq(direct, quote);
+        (uint256 start, uint256 initial, uint256 period, uint256 exitRatio) = reserve.recovery();
+        assertEq(start, block.timestamp);
+        assertEq(initial, floor);
+        assertEq(period, newPeriod);
+        assertEq(exitRatio, newMax);
+
+        assertTrue(vm.revertToStateAndDelete(snapshot));
+        reserve.checkpointRecovery();
+        assertEq(reserve.previewFund(amount), quote);
+        assertEq(reserve.recoveryFloorPriceUsd(), floor);
+        vm.prank(BOB);
+        assertEq(reserve.fund(amount, quote, BOB), direct);
+    }
 }
