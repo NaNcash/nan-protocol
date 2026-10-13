@@ -108,7 +108,7 @@ contract WithdrawalContinuationTest is Test {
 
     function testFuzzMultipleFillsConserveCohortClaims(uint96 rawPrice, bool reverse) public {
         vm.warp(10 days);
-        reserve.inf().transfer(SECOND, 30_000e18);
+        assertTrue(reserve.inf().transfer(SECOND, 30_000e18));
         vm.startPrank(SECOND);
         reserve.inf().approve(address(reserve), 30_000e18);
         reserve.requestDefund(30_000e18);

@@ -144,11 +144,11 @@ for (const wallet of wallets.slice(13, 32)) {
 }
 await state('after recap and pro-rata redemptions', nan, inf)
 
-// Primary outage, then simultaneous failure of both feeds. Restore and prove liveness.
+// Primary outage halts redemption even with a healthy fallback. Restore and prove liveness.
 await send(wallets[49], feed, feedAbi, 'setUnavailable', [true])
 for (const wallet of wallets.slice(32, 40)) {
   const balance = await read(nan, tokenAbi, 'balanceOf', [wallet.account.address])
-  await send(wallet, reserve, reserveAbi, 'redeem', [balance, 0n, wallet.account.address])
+  await mustRevert(wallet, reserve, reserveAbi, 'redeem', [balance, 0n, wallet.account.address])
 }
 await send(wallets[49], fallback, fallbackAbi, 'setPrice', [0n])
 await mustRevert(wallets[40], reserve, reserveAbi, 'redeem', [parseEther('100'), 0n, wallets[40].account.address])

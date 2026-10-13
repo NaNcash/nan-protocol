@@ -38,7 +38,7 @@ contract InfWithdrawalTest is Test {
     function _settleAndFinalize(uint256 series, uint256 epoch) internal {
         try reserve.settleDefundEpoch(series, epoch) {}
         catch (bytes memory reason) {
-            assertEq(bytes4(reason), NaNReserve.NoWithdrawalCapacity.selector);
+            assertEq(reason, abi.encodeWithSelector(NaNReserve.NoWithdrawalCapacity.selector));
         }
         (,,,, bool settled,) = reserve.withdrawalEpochs(series, epoch);
         if (!settled) {

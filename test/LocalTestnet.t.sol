@@ -41,22 +41,25 @@ contract LocalTestnetTest is Test {
         collateral.setStEthPerToken(0);
     }
 
-    function testTimeTravelKeepsHealthyFeedFreshAndFallbackSwitches() public {
+    function testTimeTravelKeepsHealthyFeedFreshAndOutageHaltsRedemption() public {
         vm.warp(block.timestamp + 5 days);
         assertEq(reserve.collateralPriceUsd(), 3_000 ether);
         feed.setStale(true);
         vm.expectRevert(WstEthUsdOracle.StalePrice.selector);
         reserve.collateralPriceUsd();
-        (uint256 redemptionPrice, bool fallbackUsed) = reserve.redemptionCollateralPriceUsd();
-        assertEq(redemptionPrice, 3_060 ether);
-        assertTrue(fallbackUsed);
+        vm.expectRevert(WstEthUsdOracle.StalePrice.selector);
+        reserve.redemptionCollateralPriceUsd();
         feed.setStale(false);
         feed.setUnavailable(true);
-        (, fallbackUsed) = reserve.redemptionCollateralPriceUsd();
-        assertTrue(fallbackUsed);
-        fallbackOracle.setPrice(0);
-        vm.expectRevert(WstEthUsdOracle.FallbackUnavailable.selector);
+        vm.expectRevert(LocalStEthUsdFeed.FeedUnavailable.selector);
         reserve.redemptionCollateralPriceUsd();
+        fallbackOracle.setPrice(0);
+        vm.expectRevert(LocalStEthUsdFeed.FeedUnavailable.selector);
+        reserve.redemptionCollateralPriceUsd();
+        feed.setUnavailable(false);
+        (uint256 price, bool fallbackUsed) = reserve.redemptionCollateralPriceUsd();
+        assertEq(price, 3_000 ether);
+        assertFalse(fallbackUsed);
     }
 
     function testLocalLifecycleThroughRealReserve() public {

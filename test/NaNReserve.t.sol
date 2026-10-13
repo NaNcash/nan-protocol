@@ -56,7 +56,7 @@ contract NaNReserveTest is Test {
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         try reserve.settleDefundEpoch(series, epoch) {}
         catch (bytes memory reason) {
-            assertEq(bytes4(reason), NaNReserve.NoWithdrawalCapacity.selector);
+            assertEq(reason, abi.encodeWithSelector(NaNReserve.NoWithdrawalCapacity.selector));
         }
         (,,,, bool settled,) = reserve.withdrawalEpochs(series, epoch);
         if (!settled) {

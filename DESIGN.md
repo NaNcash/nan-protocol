@@ -99,9 +99,9 @@ If governance lowers the current maximum, an observation can satisfy the old epi
 
 Ignoring rounding, a deposit `C` at a binding price `P` changes NAV to `(R + C - D) / (S + C/P)` once solvent. If pre-deposit NAV is below `P`, post-deposit NAV remains below `P`; otherwise exact-NAV funding preserves NAV. Consequently, at a fixed timestamp/oracle price, splitting a deposit cannot access a lower second-tranche price through the funding operation itself. Solidity fuzz tests also check integer rounding and crossing the target boundary. This does not remove the economic incentive to wait for time decay.
 
-Anyone may call `checkpointRecovery`. Funding and minting observe before and after their changes; primary redemptions do likewise; debt-bearing INF settlement observes before quoting. Oracle-free debt-free settlement does not observe. Failed transactions do not persist observations. View quotes project the current primary observation without storing it. Fallback redemptions do not start or clear recovery. Wall time, including outages, counts once an episode starts; unobserved rebounds cannot reset it. This is not proof of continuous insolvency and needs monitoring.
+Anyone may call `checkpointRecovery`. Funding and minting observe before and after their changes; redemptions do likewise; debt-bearing INF settlement observes before quoting. Oracle-free debt-free settlement does not observe. Failed transactions do not persist observations. View quotes project the current primary observation without storing it. Primary outages halt redemption and cannot start or clear recovery. Wall time, including outages, counts once an episode starts; unobserved rebounds cannot reset it. This is not proof of continuous insolvency and needs monitoring.
 
-If a final insolvent redemption exhausts both debt and collateral, surviving INF still exists. An already-active floor continues; absent a recorded episode (for example after fallback-only redemptions), fresh primary observation starts a $1 floor that then decays. Subsequent funding dilutes the old supply without replacing it.
+If a final insolvent redemption exhausts both debt and collateral, surviving INF still exists. An already-active floor continues; absent a recorded episode, a fresh primary observation starts a $1 floor that then decays. Subsequent funding dilutes the old supply without replacing it.
 
 See [RECAPITALIZATION.md](RECAPITALIZATION.md) for design rationale and review gates. This is inspired by FUM's same-token funding principle, not a port of its complete pricing algorithm. Capital arrival is not guaranteed; waiting for cheaper issuance, early-funder losses, extreme dilution, and future INF-governance capture need economic review.
 
@@ -115,11 +115,11 @@ wstETH/USD = stETH/USD * stEthPerToken()
 
 The primary feed must have a positive answer, a valid timestamp within that router's staleness limit, and a complete round. A direct stETH/USD market quote captures a stETH depeg without a separate stETH/ETH call.
 
-On primary failure, only NaN redemption can call the configured Uniswap v3 fallback. It computes a wstETH/WETH TWAP and a WETH/USDC TWAP over the same window, then quotes one wstETH through both pools. Pool identities are checked against the configured factory. Each pool must have the full observation history, adequate harmonic mean liquidity over the window, and adequate current liquidity. The fallback assumes USDC is worth $1. Uniswap's tick math and OpenZeppelin's full-precision multiplication and division calculate the quote.
+NaN redemption requires the fresh primary, including in insolvency. If the primary fails, redemption halts even if the fallback is valid. A lagging TWAP plus a fixed premium cannot establish a conservative bound against current market value during an upward move; paying against it can transfer junior equity to redeemers. The protocol explicitly trades outage availability for removing that payout path.
 
-Each router applies its configured upward premium to the fallback quote. This pays less collateral per redeemed NaN and protects the reserve from modestly low fallback valuations; it cannot make manipulated TWAPs or a USDC premium safe. The two pools can lose liquidity or migrate over the protocol's lifetime; the authorizer may deploy and select a replacement router.
+The existing router and deployment ABI retain a legacy diagnostic fallback. It computes wstETH/WETH and WETH/USDC TWAPs over the same window, checks canonical pool identities, observation history and current/harmonic liquidity, assumes USDC equals $1, and adds its configured premium. `WstEthUsdOracle.redemptionPrice()` may return this diagnostic quote; NaNReserve uses only `oracle.price()` for redemption. The reserve's `redemptionCollateralPriceUsd()` keeps its tuple ABI but always reports `fallbackUsed = false` and reverts when the primary is unavailable.
 
-Minting, funding (including during insolvency), and debt-bearing INF settlement require the primary. INF withdrawal requests, claims, expirations, and debt-free settlement do not. The reserve's ordinary health and NAV views also require the primary, while `nanRedemptionPriceUsd()` and `redemptionCollateralPriceUsd()` follow the actual redemption path. If both sources are unavailable, redemption fails closed.
+Minting, funding (including during insolvency), redemption, and debt-bearing INF settlement require the primary. INF withdrawal requests, claims, expirations, and debt-free settlement do not. Oracle-free expiry preserves partial settlements during outages. Health, NAV, and redemption-price views require the primary.
 
 ## Governance and trust model
 
@@ -134,7 +134,7 @@ The reserve has no upgrade path. Its OpenZeppelin two-step owner is the authoriz
 
 The collateral and INF addresses, senior/junior accounting rules, and one-day settlement window remain fixed. Existing withdrawal cohorts retain their snapshotted maturities, and pricing episodes retain their initial price, clock, halving period and exit ratio. The authorizer cannot mint claims, pause users, or extract collateral. Ownership cannot be renounced and changes hands through two-step acceptance. A timelocked DAO should own the reserve in production; this contract does not embed a Governor or TimelockController. Because the authorizer can choose a router with arbitrary prices or change withdrawal/mint capacity, users must monitor governance actions and treat the authorizer as a high-trust dependency. The new accounting cannot be installed into a previously deployed immutable reserve.
 
-Oracle freshness remains a liveness dependency for normal operations. NaN redemption can continue through the Uniswap TWAP fallback when the primary fails. If the primary and either Uniswap pool fail, redemption halts until the authorizer selects a working router; there is no unsafe unpriced redemption path.
+Oracle freshness remains a liveness dependency for all priced operations. NaN redemption halts until the primary recovers or the authorizer selects a working router. There is no fallback-priced or unpriced redemption path.
 
 ## Launch requirements
 

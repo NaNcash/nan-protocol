@@ -260,10 +260,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         return price;
     }
 
-    /// @notice Redemption can use the configured fallback when the primary oracle is unavailable.
+    /// @notice Fresh primary quote for redemption; reverts during a primary outage.
+    /// @dev The legacy tuple is retained for clients; fallbackUsed is always false.
     function redemptionCollateralPriceUsd() public view returns (uint256 price, bool fallbackUsed) {
-        (price, fallbackUsed) = oracle.redemptionPrice();
-        if (price == 0) revert InvalidPrice();
+        return (collateralPriceUsd(), false);
     }
 
     function reserveCollateral() public view returns (uint256) {
@@ -590,9 +590,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         uint256 debtBefore = debtUsd();
         if (debtBefore == 0) revert NoDebt();
-        (uint256 price, bool fallbackUsed) = redemptionCollateralPriceUsd();
+        (uint256 price,) = redemptionCollateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
-        if (!fallbackUsed) _syncRecovery(reserveBefore, debtBefore, inf.totalSupply());
+        _syncRecovery(reserveBefore, debtBefore, inf.totalSupply());
 
         uint256 redemptionPrice = reserveBefore >= debtBefore ? WAD : Math.mulDiv(reserveBefore, WAD, debtBefore);
         uint256 grossUsdOut = Math.mulDiv(nanIn, redemptionPrice, WAD);
@@ -608,9 +608,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         nan.burn(msg.sender, nanIn);
         collateral.safeTransfer(recipient, collateralOut);
-        if (!fallbackUsed) {
-            _syncRecovery(_collateralToUsd(reserveCollateral(), price), debtUsd(), inf.totalSupply());
-        }
+        _syncRecovery(_collateralToUsd(reserveCollateral(), price), debtUsd(), inf.totalSupply());
 
         emit Redeemed(msg.sender, recipient, nanIn, collateralOut, feeUsd);
     }

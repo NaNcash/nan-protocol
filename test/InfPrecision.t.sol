@@ -56,7 +56,7 @@ contract InfPrecisionTest is Test {
 
     function testDonationCannotForceCoarseVictimDepositEvenWithZeroMinimum() public {
         reserve.fund(1_000_000, 0, address(this));
-        collateral.transfer(address(reserve), 10_000e18);
+        assertTrue(collateral.transfer(address(reserve), 10_000e18));
         uint256 beforeBalance = collateral.balanceOf(VICTIM);
         vm.expectRevert(NaNReserve.InsufficientInfPrecision.selector);
         reserve.previewFund(1.999e18);
@@ -68,7 +68,7 @@ contract InfPrecisionTest is Test {
 
     function testFuzzDonationRoundingLossIsBounded(uint96 rawDonation, uint96 rawDeposit) public {
         reserve.fund(1e12, 0, address(this));
-        collateral.transfer(address(reserve), bound(uint256(rawDonation), 0, 100_000e18));
+        assertTrue(collateral.transfer(address(reserve), bound(uint256(rawDonation), 0, 100_000e18)));
         uint256 deposit = bound(uint256(rawDeposit), 1, 10_000e18);
         uint256 supplyBefore = reserve.inf().totalSupply();
         uint256 backingBefore = reserve.reserveCollateral();
