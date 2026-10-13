@@ -53,6 +53,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     error WithdrawalNotSettled();
     error NoWithdrawalRequest();
     error WithdrawalRequestExists();
+    error NoWithdrawalCapacity();
     error RenounceDisabled();
 
     enum Health {
@@ -119,6 +120,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     event Defunded(address indexed caller, address indexed recipient, uint256 infIn, uint256 collateralOut);
     event WithdrawalRequested(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infIn);
     event WithdrawalSettled(uint256 indexed series, uint256 indexed epoch, uint256 filledInf, uint256 collateralOut);
+    event WithdrawalProgress(uint256 indexed series, uint256 indexed epoch, uint256 filledInf, uint256 collateralOut);
     event WithdrawalExpired(uint256 indexed series, uint256 indexed epoch);
     event WithdrawalClaimed(
         address indexed account,
@@ -463,7 +465,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
-    /// @dev A cohort can be partially filled, with the unfilled INF returned during claim.
+    /// @dev Partial fills accumulate without finalizing; claims open on full fill or expiry.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -476,19 +478,24 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 filledInf;
         uint256 collateralOut;
         if (address(requestEpoch.token) == address(inf)) {
-            (filledInf, collateralOut) = _withdrawalQuote(requestEpoch.requestedInf);
+            (filledInf, collateralOut) = _withdrawalQuote(requestEpoch.requestedInf - requestEpoch.filledInf);
         }
+        if (filledInf == 0 || collateralOut == 0) revert NoWithdrawalCapacity();
 
-        requestEpoch.settled = true;
-        requestEpoch.filledInf = filledInf;
-        requestEpoch.collateralOut = collateralOut;
-        if (filledInf != 0) requestEpoch.token.burn(address(this), filledInf);
+        requestEpoch.filledInf += filledInf;
+        requestEpoch.collateralOut += collateralOut;
+        requestEpoch.settled = requestEpoch.filledInf == requestEpoch.requestedInf;
+        requestEpoch.token.burn(address(this), filledInf);
         claimableWithdrawalCollateral += collateralOut;
 
-        emit WithdrawalSettled(series, epoch, filledInf, collateralOut);
+        if (requestEpoch.settled) {
+            emit WithdrawalSettled(series, epoch, requestEpoch.filledInf, requestEpoch.collateralOut);
+        } else {
+            emit WithdrawalProgress(series, epoch, filledInf, collateralOut);
+        }
     }
 
-    /// @notice Release requests if their one-day settlement window passed without a valid settlement.
+    /// @notice Finalize at expiry, preserving partial payouts and releasing the unfilled INF on claim.
     function expireDefundEpoch(uint256 series, uint256 epoch) external {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();

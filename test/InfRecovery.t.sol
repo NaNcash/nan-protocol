@@ -238,7 +238,10 @@ contract InfRecoveryTest is Test {
         (uint256 series, uint256 epoch) = reserve.requestDefund(1_000 * WAD);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         assertGt(reserve.fundingPriceUsd(), 0);
+        vm.expectRevert(NaNReserve.NoWithdrawalCapacity.selector);
         reserve.settleDefundEpoch(series, epoch);
+        vm.warp(reserve.withdrawalExpiry(series, epoch));
+        reserve.expireDefundEpoch(series, epoch);
         vm.prank(ALICE);
         (uint256 out, uint256 refund) = reserve.claimDefund(series, epoch, 0, ALICE);
         assertEq(out, 0);

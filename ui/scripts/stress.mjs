@@ -35,6 +35,7 @@ const reserveAbi = parseAbi([
   'function withdrawalMaturity(uint256,uint256) view returns (uint256)',
   'function withdrawalExpiry(uint256,uint256) view returns (uint256)',
   'function settleDefundEpoch(uint256,uint256)',
+  'function withdrawalEpochs(uint256,uint256) view returns (address,uint256,uint256,uint256,bool,uint64)',
   'function expireDefundEpoch(uint256,uint256)',
   'function claimDefund(uint256,uint256,uint256,address) returns (uint256,uint256)',
   'function checkpointRecovery()',
@@ -121,6 +122,13 @@ const maturity = await read(reserve, reserveAbi, 'withdrawalMaturity', [series, 
 await publicClient.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${maturity.toString(16)}`] })
 await publicClient.request({ method: 'evm_mine' })
 await send(wallets[49], reserve, reserveAbi, 'settleDefundEpoch', [series, epoch])
+const [, , , , fullyFilled] = await read(reserve, reserveAbi, 'withdrawalEpochs', [series, epoch])
+if (!fullyFilled) {
+  const expiry = await read(reserve, reserveAbi, 'withdrawalExpiry', [series, epoch])
+  await publicClient.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${expiry.toString(16)}`] })
+  await publicClient.request({ method: 'evm_mine' })
+  await send(wallets[49], reserve, reserveAbi, 'expireDefundEpoch', [series, epoch])
+}
 for (const wallet of wallets) await send(wallet, reserve, reserveAbi, 'claimDefund', [series, epoch, 0n, wallet.account.address])
 await state('after price-spike withdrawals', nan, inf)
 

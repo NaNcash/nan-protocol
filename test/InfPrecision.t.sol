@@ -36,6 +36,11 @@ contract InfPrecisionTest is Test {
         (uint256 series, uint256 epoch) = reserve.requestDefund(supply - 1);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         reserve.settleDefundEpoch(series, epoch);
+        (,,,, bool settled,) = reserve.withdrawalEpochs(series, epoch);
+        if (!settled) {
+            vm.warp(reserve.withdrawalExpiry(series, epoch));
+            reserve.expireDefundEpoch(series, epoch);
+        }
         reserve.claimDefund(series, epoch, 0, address(this));
         assertEq(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
         assertEq(reserve.inf().balanceOf(address(this)), reserve.MIN_INF_SUPPLY());

@@ -235,13 +235,15 @@ async function showWithdrawals(now) {
     const [, requested] = await reserveRead('withdrawalRequests', [series, epoch, account])
     if (requested === 0n) continue
     shown++
-    const [, , , , settled, maturity] = await reserveRead('withdrawalEpochs', [series, epoch])
+    const [, totalRequested, filled, , settled, maturity] = await reserveRead('withdrawalEpochs', [series, epoch])
     const row = document.createElement('div')
     row.className = 'withdrawal'
     const heading = document.createElement('strong')
     heading.textContent = `Epoch ${epoch} · ${amount(requested)} INF`
     const detail = document.createElement('span')
-    detail.textContent = settled ? 'Settled — claim now' : `Matures ${date(maturity)}`
+    detail.textContent = settled ? 'Finalized — claim now'
+      : filled > 0n ? `Partially filled: ${amount(filled)} / ${amount(totalRequested)} INF · closes ${date(BigInt(maturity) + 86_400n)}`
+        : `Matures ${date(maturity)}`
     row.append(heading, detail)
     const actions = document.createElement('div')
     actions.className = 'inline-actions'
@@ -249,9 +251,10 @@ async function showWithdrawals(now) {
     if (settled) {
       actions.append(requestButton('Claim', () => execute('Claim', async () => reserveWrite('claimDefund', [series, epoch, 0n, account]))))
     } else if (now >= expiry) {
-      actions.append(requestButton('Expire & refund', () => execute('Expire cohort', async () => reserveWrite('expireDefundEpoch', [series, epoch]))))
+      actions.append(requestButton('Finalize cohort', () => execute('Finalize cohort', async () => reserveWrite('expireDefundEpoch', [series, epoch]))))
     } else if (now >= BigInt(maturity)) {
       actions.append(requestButton('Settle cohort', () => execute('Settle cohort', async () => reserveWrite('settleDefundEpoch', [series, epoch]))))
+      if (filled > 0n) actions.append(requestButton('Jump to expiry', () => execute('Advance chain', async () => advanceTo(expiry))))
     } else {
       actions.append(requestButton('Jump to maturity', () => execute('Advance chain', async () => advanceTo(BigInt(maturity)))))
     }

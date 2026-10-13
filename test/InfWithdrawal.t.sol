@@ -35,6 +35,18 @@ contract InfWithdrawalTest is Test {
         collateral.approve(address(reserve), type(uint256).max);
     }
 
+    function _settleAndFinalize(uint256 series, uint256 epoch) internal {
+        try reserve.settleDefundEpoch(series, epoch) {}
+        catch (bytes memory reason) {
+            assertEq(bytes4(reason), NaNReserve.NoWithdrawalCapacity.selector);
+        }
+        (,,,, bool settled,) = reserve.withdrawalEpochs(series, epoch);
+        if (!settled) {
+            vm.warp(reserve.withdrawalExpiry(series, epoch));
+            reserve.expireDefundEpoch(series, epoch);
+        }
+    }
+
     function _mintDebt() internal {
         vm.prank(BOB);
         reserve.mint(180 * WAD, 0, BOB);
@@ -69,7 +81,7 @@ contract InfWithdrawalTest is Test {
         reserve.requestDefund(3_000_000_000);
 
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
         assertGt(filledInf, 0);
         assertLt(filledInf, 3_000_000_000);
@@ -111,7 +123,7 @@ contract InfWithdrawalTest is Test {
         (uint256 series, uint256 epoch) = reserve.requestDefund(1);
         oracle.setPrice(1_500 * WAD);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
         assertEq(filledInf, 0);
         assertEq(payout, 0);
@@ -157,7 +169,7 @@ contract InfWithdrawalTest is Test {
         (uint256 epoch,) = reserve.currentWithdrawalEpoch();
         oracle.setPrice(bound(uint256(rawPrice), 1_500 * WAD, 6_000 * WAD));
         vm.warp(reserve.withdrawalMaturity(1, epoch));
-        reserve.settleDefundEpoch(1, epoch);
+        _settleAndFinalize(1, epoch);
         _claimAndCheckLowSupplyCohort(epoch, amounts, reverse);
     }
 
@@ -265,7 +277,7 @@ contract InfWithdrawalTest is Test {
         assertEq(reserve.withdrawalMaturity(series, epoch), originalMaturity);
         assertEq(reserve.withdrawalExpiry(series, epoch), originalExpiry);
         vm.warp(originalMaturity);
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         vm.prank(ALICE);
         (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 0, ALICE);
         assertGt(collateralOut, 0);
@@ -313,7 +325,7 @@ contract InfWithdrawalTest is Test {
         assertEq(reserve.withdrawalMaturity(series, nextEpoch), nextClose + 3 days);
 
         vm.warp(maturity);
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         vm.prank(ALICE);
         (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 0, ALICE);
         assertGt(collateralOut, 0);
@@ -383,7 +395,7 @@ contract InfWithdrawalTest is Test {
 
         oracle.setPrice(3_000 * WAD);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
 
         uint256 expectedUsd = 1_000 * WAD * (840_000 - 539_460) / 300_000;
         uint256 expectedCollateral = expectedUsd / 3_000;
@@ -406,7 +418,7 @@ contract InfWithdrawalTest is Test {
         reserve.requestDefund(20_000 * WAD);
 
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         (,, uint256 filledInf, uint256 totalCollateralOut,,) = reserve.withdrawalEpochs(series, epoch);
         assertGt(filledInf, 0);
         assertLt(filledInf, 40_000 * WAD);
@@ -430,7 +442,7 @@ contract InfWithdrawalTest is Test {
         vm.prank(ALICE);
         (uint256 series, uint256 epoch) = reserve.requestDefund(5_000 * WAD);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
 
         uint256 claimable = reserve.claimableWithdrawalCollateral();
         assertGt(claimable, 0);
@@ -459,7 +471,7 @@ contract InfWithdrawalTest is Test {
         oracle.setPrice(3_000 * WAD);
 
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         vm.prank(ALICE);
         (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
         assertGt(collateralOut, 0);
@@ -474,7 +486,7 @@ contract InfWithdrawalTest is Test {
         (uint256 series, uint256 epoch) = reserve.requestDefund(infSupply);
         oracle.setPrice(0);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         vm.prank(ALICE);
         (uint256 collateralOut,) = reserve.claimDefund(series, epoch, 100 * WAD, ALICE);
         assertEq(collateralOut, 100 * WAD);
@@ -511,7 +523,7 @@ contract InfWithdrawalTest is Test {
         vm.prank(BOB);
         reserve.requestDefund(bobAmount);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
         (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
 
         vm.prank(BOB);
@@ -534,7 +546,7 @@ contract InfWithdrawalTest is Test {
         (uint256 series, uint256 epoch) = reserve.requestDefund(infAmount);
         oracle.setPrice(bound(uint256(rawPrice), 1_500 * WAD, 6_000 * WAD));
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        _settleAndFinalize(series, epoch);
 
         (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
         if (filledInf != 0) assertLe(reserve.debtRatioBps(), reserve.maxDebtRatioBps());
