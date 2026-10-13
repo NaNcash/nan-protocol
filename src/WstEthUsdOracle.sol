@@ -19,8 +19,8 @@ interface IAggregatorV3 {
 }
 
 /// @notice Immutable wstETH/USD router with a direct Chainlink stETH/USD primary and an independent fallback.
-/// @dev Normal operations require the primary. Only NaN redemption can use the fallback, with an upward
-///      price premium so each redeemed dollar removes less collateral. The fallback must quote wstETH/USD.
+/// @dev The reserve uses the primary for all priced actions, including redemption. The legacy
+///      redemptionPrice fallback quote remains available for diagnostics, never reserve payouts.
 contract WstEthUsdOracle is IReserveOracle {
     error ZeroAddress();
     error InvalidConfiguration();
@@ -80,7 +80,8 @@ contract WstEthUsdOracle is IReserveOracle {
         if (wstEthUsd == 0) revert InvalidPrice();
     }
 
-    /// @notice Primary price when valid; otherwise a premium-adjusted independent fallback for redemption.
+    /// @notice Legacy diagnostic quote: primary when valid, otherwise a premium-adjusted fallback.
+    /// @dev NaNReserve does not use this fallback to authorize redemption.
     function redemptionPrice() external view returns (uint256 collateralPrice, bool fallbackUsed) {
         try this.price() returns (uint256 primaryPrice) {
             return (primaryPrice, false);

@@ -37,22 +37,23 @@ It is an economic-design draft, not a production-ready or audited release.
 Anyone may checkpoint the primary oracle. Funding and other primary-priced
 reserve actions also observe recovery. Observations are not continuous proof of
 market conditions: an unobserved rebound cannot reset the clock. Elapsed wall
-time, including oracle outages, counts after an episode starts. Fallback-only
-redemption must neither start nor clear an episode and must remain available.
+time, including oracle outages, counts after an episode starts. NaN redemption
+requires the primary and halts during outages, leaving episode state unchanged.
 
 The existing withdrawal ABI keeps its `series` argument as a compatibility
 namespace fixed at 1. INF itself is immutable; there is no replacement machinery.
 Queued shares remain subject to dilution, and settled collateral stays excluded
-from reserve backing. Three-day default withdrawals and senior redemption rules
-are unchanged. The minimum debt ratio still caps funding; a single deposit no
-longer needs to restore the target ratio.
+from reserve backing. Withdrawals retain the three-day default delay; partial
+fills can continue until expiry. Senior redemptions retain the solvency-based
+payout rules and require a fresh primary. The minimum debt ratio still caps
+funding; a single deposit no longer needs to restore the target ratio.
 
 ## Review gates
 
 Test flash crashes/rebounds, partial and full recapitalization, split deposits
 (including recovery-boundary crossings), long decay, repeated episodes, stale
-primary/fallback redemption, authorizer updates, withdrawal queues, depleted
-reserves and rounding. Preserve accounting and senior-solvency invariants.
+primary redemption, outage rejection and restoration, authorizer updates,
+withdrawal queues, depleted reserves and rounding. Preserve accounting and senior-solvency invariants.
 
 Economic review must address waiting for cheaper issuance, early contributors
 absorbing the deficit before receiving positive NAV, potentially extreme

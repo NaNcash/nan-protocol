@@ -35,6 +35,7 @@ const reserveAbi = parseAbi([
   'function withdrawalMaturity(uint256,uint256) view returns (uint256)',
   'function withdrawalExpiry(uint256,uint256) view returns (uint256)',
   'function settleDefundEpoch(uint256,uint256)',
+  'function withdrawalEpochs(uint256,uint256) view returns (address,uint256,uint256,uint256,bool,uint64)',
   'function expireDefundEpoch(uint256,uint256)',
   'function claimDefund(uint256,uint256,uint256,address) returns (uint256,uint256)',
   'function checkpointRecovery()',
@@ -121,6 +122,13 @@ const maturity = await read(reserve, reserveAbi, 'withdrawalMaturity', [series, 
 await publicClient.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${maturity.toString(16)}`] })
 await publicClient.request({ method: 'evm_mine' })
 await send(wallets[49], reserve, reserveAbi, 'settleDefundEpoch', [series, epoch])
+const [, , , , fullyFilled] = await read(reserve, reserveAbi, 'withdrawalEpochs', [series, epoch])
+if (!fullyFilled) {
+  const expiry = await read(reserve, reserveAbi, 'withdrawalExpiry', [series, epoch])
+  await publicClient.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${expiry.toString(16)}`] })
+  await publicClient.request({ method: 'evm_mine' })
+  await send(wallets[49], reserve, reserveAbi, 'expireDefundEpoch', [series, epoch])
+}
 for (const wallet of wallets) await send(wallet, reserve, reserveAbi, 'claimDefund', [series, epoch, 0n, wallet.account.address])
 await state('after price-spike withdrawals', nan, inf)
 
@@ -136,11 +144,11 @@ for (const wallet of wallets.slice(13, 32)) {
 }
 await state('after recap and pro-rata redemptions', nan, inf)
 
-// Primary outage, then simultaneous failure of both feeds. Restore and prove liveness.
+// Primary outage halts redemption even with a healthy fallback. Restore and prove liveness.
 await send(wallets[49], feed, feedAbi, 'setUnavailable', [true])
 for (const wallet of wallets.slice(32, 40)) {
   const balance = await read(nan, tokenAbi, 'balanceOf', [wallet.account.address])
-  await send(wallet, reserve, reserveAbi, 'redeem', [balance, 0n, wallet.account.address])
+  await mustRevert(wallet, reserve, reserveAbi, 'redeem', [balance, 0n, wallet.account.address])
 }
 await send(wallets[49], fallback, fallbackAbi, 'setPrice', [0n])
 await mustRevert(wallets[40], reserve, reserveAbi, 'redeem', [parseEther('100'), 0n, wallets[40].account.address])

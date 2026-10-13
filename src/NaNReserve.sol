@@ -22,6 +22,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
+    /// @notice Minimum nonzero INF supply and minimum funding output, in INF base units.
+    /// @dev A successful deposit loses less than one billionth of its exact share quote to rounding.
+    uint256 public constant MIN_INF_SUPPLY = 1e9;
     uint256 public constant MAX_FEE_BPS = 1_000;
     uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
     uint256 public constant MAX_INF_WITHDRAWAL_DELAY = 30 days;
@@ -41,6 +44,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     error NoDebt();
     error NoJuniorCapital();
     error Slippage();
+    error InsufficientInfPrecision();
     error UnsupportedTransferFee();
     error WithdrawalNotReady();
     error WithdrawalWindowClosed();
@@ -49,6 +53,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     error WithdrawalNotSettled();
     error NoWithdrawalRequest();
     error WithdrawalRequestExists();
+    error NoWithdrawalCapacity();
     error RenounceDisabled();
 
     enum Health {
@@ -115,6 +120,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     event Defunded(address indexed caller, address indexed recipient, uint256 infIn, uint256 collateralOut);
     event WithdrawalRequested(address indexed account, uint256 indexed series, uint256 indexed epoch, uint256 infIn);
     event WithdrawalSettled(uint256 indexed series, uint256 indexed epoch, uint256 filledInf, uint256 collateralOut);
+    event WithdrawalProgress(uint256 indexed series, uint256 indexed epoch, uint256 filledInf, uint256 collateralOut);
     event WithdrawalExpired(uint256 indexed series, uint256 indexed epoch);
     event WithdrawalClaimed(
         address indexed account,
@@ -254,10 +260,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         return price;
     }
 
-    /// @notice Redemption can use the configured fallback when the primary oracle is unavailable.
+    /// @notice Fresh primary quote for redemption; reverts during a primary outage.
+    /// @dev The legacy tuple is retained for clients; fallbackUsed is always false.
     function redemptionCollateralPriceUsd() public view returns (uint256 price, bool fallbackUsed) {
-        (price, fallbackUsed) = oracle.redemptionPrice();
-        if (price == 0) revert InvalidPrice();
+        return (collateralPriceUsd(), false);
     }
 
     function reserveCollateral() public view returns (uint256) {
@@ -459,7 +465,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
-    /// @dev A cohort can be partially filled, with the unfilled INF returned during claim.
+    /// @dev Partial fills accumulate without finalizing; claims open on full fill or expiry.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -472,19 +478,24 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 filledInf;
         uint256 collateralOut;
         if (address(requestEpoch.token) == address(inf)) {
-            (filledInf, collateralOut) = _withdrawalQuote(requestEpoch.requestedInf);
+            (filledInf, collateralOut) = _withdrawalQuote(requestEpoch.requestedInf - requestEpoch.filledInf);
         }
+        if (filledInf == 0 || collateralOut == 0) revert NoWithdrawalCapacity();
 
-        requestEpoch.settled = true;
-        requestEpoch.filledInf = filledInf;
-        requestEpoch.collateralOut = collateralOut;
-        if (filledInf != 0) requestEpoch.token.burn(address(this), filledInf);
+        requestEpoch.filledInf += filledInf;
+        requestEpoch.collateralOut += collateralOut;
+        requestEpoch.settled = requestEpoch.filledInf == requestEpoch.requestedInf;
+        requestEpoch.token.burn(address(this), filledInf);
         claimableWithdrawalCollateral += collateralOut;
 
-        emit WithdrawalSettled(series, epoch, filledInf, collateralOut);
+        if (requestEpoch.settled) {
+            emit WithdrawalSettled(series, epoch, requestEpoch.filledInf, requestEpoch.collateralOut);
+        } else {
+            emit WithdrawalProgress(series, epoch, filledInf, collateralOut);
+        }
     }
 
-    /// @notice Release requests if their one-day settlement window passed without a valid settlement.
+    /// @notice Finalize at expiry, preserving partial payouts and releasing the unfilled INF on claim.
     function expireDefundEpoch(uint256 series, uint256 epoch) external {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -579,9 +590,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         uint256 debtBefore = debtUsd();
         if (debtBefore == 0) revert NoDebt();
-        (uint256 price, bool fallbackUsed) = redemptionCollateralPriceUsd();
+        (uint256 price,) = redemptionCollateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
-        if (!fallbackUsed) _syncRecovery(reserveBefore, debtBefore, inf.totalSupply());
+        _syncRecovery(reserveBefore, debtBefore, inf.totalSupply());
 
         uint256 redemptionPrice = reserveBefore >= debtBefore ? WAD : Math.mulDiv(reserveBefore, WAD, debtBefore);
         uint256 grossUsdOut = Math.mulDiv(nanIn, redemptionPrice, WAD);
@@ -597,9 +608,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         nan.burn(msg.sender, nanIn);
         collateral.safeTransfer(recipient, collateralOut);
-        if (!fallbackUsed) {
-            _syncRecovery(_collateralToUsd(reserveCollateral(), price), debtUsd(), inf.totalSupply());
-        }
+        _syncRecovery(_collateralToUsd(reserveCollateral(), price), debtUsd(), inf.totalSupply());
 
         emit Redeemed(msg.sender, recipient, nanIn, collateralOut, feeUsd);
     }
@@ -614,8 +623,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 debt = debtUsd();
 
         if (debt == 0) {
-            filledInf = requestedInf;
-            collateralOut = requestedInf == supply ? reserve : Math.mulDiv(requestedInf, reserve, supply);
+            filledInf = _precisionSafeBurn(requestedInf, supply);
+            collateralOut = filledInf == supply ? reserve : Math.mulDiv(filledInf, reserve, supply);
+            if (collateralOut == 0) return (0, 0);
             return (filledInf, collateralOut);
         }
 
@@ -633,12 +643,19 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 equity = reserveValue - debt;
         uint256 maximumUsdOut = _collateralToUsd(availableCollateral, price);
         filledInf = Math.min(requestedInf, Math.mulDiv(maximumUsdOut, supply, equity));
+        filledInf = _precisionSafeBurn(filledInf, supply);
         collateralOut = _usdToCollateral(Math.mulDiv(filledInf, equity, supply), price);
         if (collateralOut == 0) return (0, 0);
 
         if (!_withinDebtRatio(debt, _collateralToUsd(reserve - collateralOut, price), targetDebtRatioBps)) {
             revert DebtRatioTooHigh();
         }
+    }
+
+    /// @dev Allow a complete exit, but never leave an outstanding supply below the precision floor.
+    function _precisionSafeBurn(uint256 amount, uint256 supply) internal pure returns (uint256) {
+        if (amount == supply) return amount;
+        return Math.min(amount, supply - MIN_INF_SUPPLY);
     }
 
     function _checkFundingCap(uint256 collateralIn, uint256 price, uint256 debt) internal view {
@@ -653,18 +670,21 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     function _fundingQuote(uint256 usdIn, uint256 reserve, uint256 debt, uint256 supply, uint256 floor)
         internal
         pure
-        returns (uint256)
+        returns (uint256 infOut)
     {
         if (supply == 0) {
             if (debt != 0) revert NoJuniorCapital();
-            return usdIn;
+            infOut = usdIn;
+        } else {
+            uint256 equity = reserve > debt ? reserve - debt : 0;
+            if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
+                infOut = Math.mulDiv(usdIn, WAD, floor);
+            } else {
+                // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
+                infOut = Math.mulDiv(usdIn, supply, equity);
+            }
         }
-        uint256 equity = reserve > debt ? reserve - debt : 0;
-        if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
-            return Math.mulDiv(usdIn, WAD, floor);
-        }
-        // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
-        return Math.mulDiv(usdIn, supply, equity);
+        if (infOut < MIN_INF_SUPPLY) revert InsufficientInfPrecision();
     }
 
     function _recoveryAt(uint256 reserve, uint256 debt, uint256 supply) internal view returns (Recovery memory next) {

@@ -172,7 +172,10 @@ contract GovernanceTest is Test {
 
         reserve.setDebtRatios(5_000, 6_400, 6_500);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
+        vm.expectRevert(NaNReserve.NoWithdrawalCapacity.selector);
         reserve.settleDefundEpoch(series, epoch);
+        vm.warp(reserve.withdrawalExpiry(series, epoch));
+        reserve.expireDefundEpoch(series, epoch);
         vm.prank(ALICE);
         (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
         assertEq(collateralOut, 0);

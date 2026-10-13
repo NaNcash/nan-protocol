@@ -54,7 +54,15 @@ contract NaNReserveTest is Test {
         vm.prank(ALICE);
         (series, epoch) = reserve.requestDefund(amount);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
-        reserve.settleDefundEpoch(series, epoch);
+        try reserve.settleDefundEpoch(series, epoch) {}
+        catch (bytes memory reason) {
+            assertEq(reason, abi.encodeWithSelector(NaNReserve.NoWithdrawalCapacity.selector));
+        }
+        (,,,, bool settled,) = reserve.withdrawalEpochs(series, epoch);
+        if (!settled) {
+            vm.warp(reserve.withdrawalExpiry(series, epoch));
+            reserve.expireDefundEpoch(series, epoch);
+        }
     }
 
     function testDeploymentCreatesPermanentPermitTokens() public view {

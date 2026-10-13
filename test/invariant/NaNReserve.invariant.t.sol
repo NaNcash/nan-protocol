@@ -241,6 +241,9 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         handler.redeem(uint96(100 * WAD));
         assertLt(reserve.debtUsd(), debtBefore);
         handler.processWithdrawal();
+        assertTrue(handler.hasWithdrawal());
+        vm.warp(reserve.withdrawalExpiry(reserve.juniorSeries(), epoch));
+        handler.processWithdrawal();
         assertFalse(handler.hasWithdrawal());
         invariantDebtAlwaysEqualsNanSupply();
         invariantClaimableWithdrawalCollateralIsNotReserveBacking();
@@ -270,6 +273,27 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
 
     function invariantOutstandingDebtAlwaysHasActiveJuniorCapital() public view {
         if (reserve.debtUsd() != 0) assertGt(reserve.inf().totalSupply(), 0);
+    }
+
+    function invariantInfSupplyNeverFallsBelowPrecisionFloor() public view {
+        uint256 supply = reserve.inf().totalSupply();
+        if (supply != 0) assertGe(supply, reserve.MIN_INF_SUPPLY());
+    }
+
+    function invariantWithdrawalEscrowsMatchUnclaimedCohorts() public view {
+        uint256 lockedInf;
+        uint256 lockedCollateral;
+        for (uint256 i; i < handler.withdrawalCount(); ++i) {
+            uint256 epoch = handler.withdrawalEpochIds(i);
+            (, uint256 requested) = reserve.withdrawalRequests(1, epoch, address(handler));
+            if (requested == 0) continue;
+            (,, uint256 filled, uint256 payout,,) = reserve.withdrawalEpochs(1, epoch);
+            assertLe(filled, requested);
+            lockedInf += requested - filled;
+            lockedCollateral += payout;
+        }
+        assertEq(reserve.inf().balanceOf(address(reserve)), lockedInf);
+        assertEq(reserve.claimableWithdrawalCollateral(), lockedCollateral);
     }
 
     function invariantHealthyStateRespectsConfiguredDebtRatio() public view {
