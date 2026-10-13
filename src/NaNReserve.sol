@@ -22,6 +22,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
+    /// @notice Minimum nonzero INF supply and minimum funding output, in INF base units.
+    /// @dev A successful deposit loses less than one billionth of its exact share quote to rounding.
+    uint256 public constant MIN_INF_SUPPLY = 1e9;
     uint256 public constant MAX_FEE_BPS = 1_000;
     uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
     uint256 public constant MAX_INF_WITHDRAWAL_DELAY = 30 days;
@@ -41,6 +44,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     error NoDebt();
     error NoJuniorCapital();
     error Slippage();
+    error InsufficientInfPrecision();
     error UnsupportedTransferFee();
     error WithdrawalNotReady();
     error WithdrawalWindowClosed();
@@ -614,8 +618,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 debt = debtUsd();
 
         if (debt == 0) {
-            filledInf = requestedInf;
-            collateralOut = requestedInf == supply ? reserve : Math.mulDiv(requestedInf, reserve, supply);
+            filledInf = _precisionSafeBurn(requestedInf, supply);
+            collateralOut = filledInf == supply ? reserve : Math.mulDiv(filledInf, reserve, supply);
+            if (collateralOut == 0) return (0, 0);
             return (filledInf, collateralOut);
         }
 
@@ -633,12 +638,19 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 equity = reserveValue - debt;
         uint256 maximumUsdOut = _collateralToUsd(availableCollateral, price);
         filledInf = Math.min(requestedInf, Math.mulDiv(maximumUsdOut, supply, equity));
+        filledInf = _precisionSafeBurn(filledInf, supply);
         collateralOut = _usdToCollateral(Math.mulDiv(filledInf, equity, supply), price);
         if (collateralOut == 0) return (0, 0);
 
         if (!_withinDebtRatio(debt, _collateralToUsd(reserve - collateralOut, price), targetDebtRatioBps)) {
             revert DebtRatioTooHigh();
         }
+    }
+
+    /// @dev Allow a complete exit, but never leave an outstanding supply below the precision floor.
+    function _precisionSafeBurn(uint256 amount, uint256 supply) internal pure returns (uint256) {
+        if (amount == supply) return amount;
+        return Math.min(amount, supply - MIN_INF_SUPPLY);
     }
 
     function _checkFundingCap(uint256 collateralIn, uint256 price, uint256 debt) internal view {
@@ -653,18 +665,21 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     function _fundingQuote(uint256 usdIn, uint256 reserve, uint256 debt, uint256 supply, uint256 floor)
         internal
         pure
-        returns (uint256)
+        returns (uint256 infOut)
     {
         if (supply == 0) {
             if (debt != 0) revert NoJuniorCapital();
-            return usdIn;
+            infOut = usdIn;
+        } else {
+            uint256 equity = reserve > debt ? reserve - debt : 0;
+            if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
+                infOut = Math.mulDiv(usdIn, WAD, floor);
+            } else {
+                // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
+                infOut = Math.mulDiv(usdIn, supply, equity);
+            }
         }
-        uint256 equity = reserve > debt ? reserve - debt : 0;
-        if (floor != 0 && Math.mulDiv(equity, WAD, supply) < floor) {
-            return Math.mulDiv(usdIn, WAD, floor);
-        }
-        // Keep the exact NAV ratio to avoid cheap issuance from a rounded-down per-token price.
-        return Math.mulDiv(usdIn, supply, equity);
+        if (infOut < MIN_INF_SUPPLY) revert InsufficientInfPrecision();
     }
 
     function _recoveryAt(uint256 reserve, uint256 debt, uint256 supply) internal view returns (Recovery memory next) {

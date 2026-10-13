@@ -32,6 +32,7 @@ The reserve is non-upgradeable and has an OpenZeppelin two-step owner serving as
 - Both fees are authorizer-settable but capped at 1,000 basis points each. An insolvent redemption still has no explicit fee.
 - The primary is checked for a positive answer, valid timestamp, staleness, and completed round. The TWAP requires a full observation window, canonical Uniswap pools, and minimum current and time-weighted liquidity in both pools; unavailable or thin pools halt redemption.
 - Fee-on-transfer collateral is rejected, and only 18-decimal collateral is accepted.
+- INF funding must mint at least `MIN_INF_SUPPLY` (one billion base units, or 0.000000001 INF), bounding share-quote rounding loss below one billionth. Withdrawals preserve that minimum whenever supply remains nonzero; a complete debt-free exit can still burn the entire supply. Deposits with coarser output revert even with a zero minimum, and withdrawals never burn INF for zero aggregate collateral.
 - NaN and INF use OpenZeppelin ERC-20 and ERC-2612 Permit. Reserve transfers, full-precision math, and reentrancy protection also use OpenZeppelin Contracts.
 
 See [DESIGN.md](DESIGN.md) for the accounting model and state transitions and [RECAPITALIZATION.md](RECAPITALIZATION.md) for the draft pricing specification and economic review gates.

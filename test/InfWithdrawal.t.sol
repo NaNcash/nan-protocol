@@ -44,11 +44,11 @@ contract InfWithdrawalTest is Test {
         reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 5_500, 6_500, 10, 10);
         inf = reserve.inf();
         vm.startPrank(ALICE);
-        collateral.approve(address(reserve), 2);
-        reserve.fund(2, 0, ALICE);
+        collateral.approve(address(reserve), 2_000_000);
+        reserve.fund(2_000_000, 0, ALICE);
         inf.approve(address(reserve), 1);
         vm.stopPrank();
-        assertEq(inf.totalSupply(), 6_000);
+        assertEq(inf.totalSupply(), 6_000_000_000);
 
         collateral.mint(address(reserve), 2_000 * WAD);
         vm.startPrank(BOB);
@@ -60,20 +60,22 @@ contract InfWithdrawalTest is Test {
     function testZeroBurnRequestReceivesNoCollateral() public {
         _useLowSupplyReserve();
         vm.prank(ALICE);
-        assertTrue(inf.transfer(BOB, 3_000));
+        assertTrue(inf.transfer(BOB, 3_000_000_000));
         vm.prank(BOB);
-        inf.approve(address(reserve), 3_000);
+        inf.approve(address(reserve), 3_000_000_000);
         vm.prank(ALICE);
         (uint256 series, uint256 epoch) = reserve.requestDefund(1);
         vm.prank(BOB);
-        reserve.requestDefund(3_000);
+        reserve.requestDefund(3_000_000_000);
 
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         reserve.settleDefundEpoch(series, epoch);
         (,, uint256 filledInf, uint256 payout,,) = reserve.withdrawalEpochs(series, epoch);
-        assertEq(filledInf, 1_100);
-        assertEq(payout, 367_033333333333333333);
-        assertEq(inf.totalSupply(), 4_900);
+        assertGt(filledInf, 0);
+        assertLt(filledInf, 3_000_000_000);
+        assertGt(payout, 0);
+        assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
+        assertEq(inf.totalSupply(), 6_000_000_000 - filledInf);
 
         vm.prank(ALICE);
         vm.expectRevert(NaNReserve.Slippage.selector);
@@ -90,15 +92,15 @@ contract InfWithdrawalTest is Test {
         assertEq(aliceOut, 0);
         assertEq(aliceRefund, 1);
         assertEq(collateral.balanceOf(ALICE), aliceCollateralBefore);
-        assertEq(inf.balanceOf(ALICE), 3_000);
+        assertEq(inf.balanceOf(ALICE), 3_000_000_000);
         assertEq(reserve.claimableWithdrawalCollateral(), payout);
 
         vm.expectEmit(true, true, true, true, address(reserve));
-        emit NaNReserve.WithdrawalClaimed(BOB, BOB, series, epoch, filledInf, payout, 1_900);
+        emit NaNReserve.WithdrawalClaimed(BOB, BOB, series, epoch, filledInf, payout, 3_000_000_000 - filledInf);
         vm.prank(BOB);
         (uint256 bobOut, uint256 bobRefund) = reserve.claimDefund(series, epoch, payout, BOB);
         assertEq(bobOut, payout);
-        assertEq(bobRefund, 1_900);
+        assertEq(bobRefund, 3_000_000_000 - filledInf);
         assertEq(reserve.claimableWithdrawalCollateral(), 0);
         assertEq(inf.balanceOf(address(reserve)), 0);
     }
@@ -118,14 +120,14 @@ contract InfWithdrawalTest is Test {
         (uint256 collateralOut, uint256 refundedInf) = reserve.claimDefund(series, epoch, 0, ALICE);
         assertEq(collateralOut, 0);
         assertEq(refundedInf, 1);
-        assertEq(inf.balanceOf(ALICE), 6_000);
-        assertEq(inf.totalSupply(), 6_000);
+        assertEq(inf.balanceOf(ALICE), 6_000_000_000);
+        assertEq(inf.totalSupply(), 6_000_000_000);
         assertEq(reserve.claimableWithdrawalCollateral(), 0);
         assertEq(inf.balanceOf(address(reserve)), 0);
     }
 
     function testFuzzLowSupplyClaimsMatchBurns(
-        uint16 rawTotal,
+        uint64 rawTotal,
         uint8 rawCount,
         uint64 rawSplit,
         uint96 rawPrice,
@@ -133,7 +135,7 @@ contract InfWithdrawalTest is Test {
     ) public {
         _useLowSupplyReserve();
         uint256 count = bound(uint256(rawCount), 2, 8);
-        uint256 remaining = bound(uint256(rawTotal), count, 6_000);
+        uint256 remaining = bound(uint256(rawTotal), count, 6_000_000_000);
         uint256[] memory amounts = new uint256[](count);
         for (uint256 i; i < count; ++i) {
             uint256 amount = i == count - 1
@@ -172,7 +174,7 @@ contract InfWithdrawalTest is Test {
         }
         assertEq(totalOut, payout);
         assertEq(totalRefund + filledInf, requestedInf);
-        assertEq(inf.totalSupply(), 6_000 - filledInf);
+        assertEq(inf.totalSupply(), 6_000_000_000 - filledInf);
         assertEq(reserve.claimableWithdrawalCollateral(), 0);
         assertEq(inf.balanceOf(address(reserve)), 0);
     }
