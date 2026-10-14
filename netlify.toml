@@ -1,0 +1,13 @@
+[build]
+  base = "ui"
+  command = "npm run build:sepolia"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "24"
+  VITE_PLAYGROUND_NETWORK = "sepolia"
+
+[[headers]]
+  for = "/sepolia-deployment.json"
+  [headers.values]
+    Cache-Control = "no-cache"

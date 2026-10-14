@@ -26,3 +26,15 @@ local-deploy:
 
 local-ui:
 	cd ui && npm run dev
+
+sepolia-dry-run:
+	node --env-file=.env.sepolia scripts/sepolia-deploy.mjs
+
+sepolia-deploy:
+	node --env-file=.env.sepolia scripts/sepolia-deploy.mjs --broadcast
+
+sepolia-manifest:
+	node --env-file=.env.sepolia scripts/sepolia-deploy.mjs --manifest-only
+
+sepolia-ui:
+	node --env-file=.env.sepolia scripts/sepolia-ui.mjs

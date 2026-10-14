@@ -2,6 +2,13 @@ out/
 cache/
 broadcast/
 .env
+.env.*
+!.env.example
+!.env.sepolia.example
+.sepolia-keystore-password
+ui/.env
+ui/.env.*
+!ui/.env.example
 ui/node_modules/
 ui/dist/
 ui/public/local-deployment.json
