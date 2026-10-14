@@ -93,6 +93,71 @@ On a fresh local deployment, `npm run smoke --prefix ui` exercises the same cont
 
 For an isolated 50-wallet stress run, start a separate Anvil on port 8546, deploy with `PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 forge script script/DeployLocal.s.sol:DeployLocal --rpc-url http://127.0.0.1:8546 --broadcast`, then run `node ui/scripts/stress.mjs`. The script requires a fresh deployment and refuses port 8545. It exercises a 50-account withdrawal cohort, price spike and crash, recapitalization, redemptions, primary-outage rejection with a healthy fallback, both-oracle failure, missed-settlement refund, and restored funding/minting/redemption. The local mock feed and faucet are intentionally controllable, so this is a protocol-state stress test, not a live-market oracle security test.
 
+## Sepolia playground
+
+The Sepolia mode uses the existing reserve and oracle router with **Playground Ether (`pgETH`)**, a freely mintable 18-decimal ERC-20 collateral token. It is not native ETH, wrapped ETH, or redeemable for ETH, and has no monetary value. Anyone can mint up to 1,000 pgETH per faucet transaction and repeat as needed. Native Sepolia ETH is needed only for deployment and transaction gas. The deployer receives 300,000 initial INF for seeding the reserve with 100 free pgETH; visitors can immediately mint NaN, subject to the reserve's debt-ratio limit.
+
+The new playground contracts and deployment script refuse chains other than Sepolia (`11155111`). They use synthetic USD prices, initially $3,000 with a 1:1 value multiplier. A healthy feed stays fresh without a keeper; it does not follow the market. Only each mock's owner can change the price, rate, or outage settings. `SEPOLIA_AUTHORIZER` sets the initial controller of all three mocks and the reserve, defaulting to the deployment wallet. Scenario changes affect every user of this deployment. Local Anvil mocks and the production deployment script remain separate.
+
+Prepare dependencies and a private config file from the repository root:
+
+```bash
+npm ci --prefix ui
+cp .env.sepolia.example .env.sepolia
+chmod 600 .env.sepolia
+```
+
+Import a **dedicated Sepolia wallet** into Foundry's encrypted keystore using `cast wallet import sepolia-deployer --interactive`. Put the account name in `SEPOLIA_ACCOUNT` in the root `.env.sepolia`; the default is `sepolia-deployer`. Keep private keys and passwords out of this config and chat. Set `SEPOLIA_RPC_URL` to your Sepolia HTTP(S) endpoint; the template includes a public endpoint, which may rate-limit requests. The config, broadcast logs, and local Anvil manifest are ignored by Git. The public Sepolia manifest contains only addresses and chain metadata and is committed with the frontend for hosting. The deployment wrapper rejects standard Anvil accounts and checks the RPC chain before invoking Forge. Optionally set `SEPOLIA_AUTHORIZER` to the wallet you want to use for scenario controls, and `ETHERSCAN_API_KEY` for source verification during broadcast.
+
+When you run `make sepolia-deploy` in a terminal, Foundry prompts for the keystore password once; no password file is needed. The script resolves the unlocked wallet directly from Foundry. To deploy from an automated session, create a local password file with permissions `600`, then set `SEPOLIA_PASSWORD_FILE` to its absolute path. The file is passed directly to Foundry; its contents are never read by the deployment wrapper or written to the manifest. Remove the temporary password file after deployment. A dry run can use `SEPOLIA_DEPLOYER=<public wallet address>` without unlocking the keystore; broadcasting verifies that the selected keystore actually matches that address.
+
+Run a simulation first to validate the contract logic. On Sepolia after Glamsterdam, older Foundry versions still print gas totals from the earlier gas schedule; those totals understate deployment cost. `sepolia-deploy` uses Sepolia RPC gas estimation with 30% headroom for each transaction immediately before sending it. Fund the deployment wallet for the current network costs, then deploy:
+
+```bash
+make sepolia-dry-run
+make sepolia-deploy
+make sepolia-ui
+```
+
+Only `sepolia-deploy` sends transactions. It runs the deployment script, forces sequential RPC gas estimation through Forge’s `--skip-simulation` mode to avoid outdated local gas estimates, seeds backing with an exact collateral approval, then validates receipts, deployed bytecode, reserve wiring, and controller ownership before writing `ui/public/sepolia-deployment.json`. If the manifest already exists, archive it before intentionally deploying another stack. If broadcast or verification fails after transactions have been sent, inspect `broadcast/DeploySepolia.s.sol/11155111/run-latest.json` and complete/resume that deployment before retrying. `make sepolia-manifest` recovers the manifest after a completed deployment without sending transactions; it verifies recorded receipts against the configured chain. Do not use `sepolia-manifest` to publish a partially completed deployment.
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173), connect a Sepolia test wallet, get free pgETH, then fund INF or mint NaN. Deposit and withdrawal buttons show an explicit token approval step; after approval confirms, click the action again to execute it. This mode switches the wallet to Sepolia, labels pgETH separately from native gas ETH, restricts scenario buttons to the appropriate mock owner, and removes Anvil balance top-ups and time travel. Withdrawals use real time: the default wait is three days after the daily cohort closes. Matured cohorts still need a user to settle or expire them, then each requester claims their payout. Recovery checkpoints remain permissionless.
+
+`make sepolia-ui` uses the configured RPC through Vite's local `/rpc` proxy; RPC credentials stay server-side and deployment keys are removed from the UI process environment. For a static frontend, build **after** the real deployment manifest is generated:
+
+```bash
+VITE_PLAYGROUND_NETWORK=sepolia npm run build --prefix ui
+```
+
+The static build uses the public PublicNode Ethereum Sepolia endpoint. Override it with `VITE_SEPOLIA_RPC_URL` when building if needed; this value is exposed to every browser, so it must not contain private credentials. Host `ui/dist` as static files, including `sepolia-deployment.json`. The dev `/rpc` proxy is unnecessary for this build. Hosting the UI is a separate step from deploying contracts.
+
+### Automatic Netlify deployment
+
+The root `netlify.toml` builds the static Sepolia frontend with Node 24. It sets the base directory to `ui`, runs `npm run build:sepolia`, and publishes `ui/dist`. Netlify installs dependencies from `ui/package-lock.json`. The build validates the committed Sepolia deployment manifest, forces Sepolia mode, and excludes the local Anvil manifest. It uses existing deployed contracts and needs no Foundry installation, private key, keystore, or deployment password.
+
+To connect automatic deployments:
+
+1. Commit and push the frontend changes, `netlify.toml`, and `ui/public/sepolia-deployment.json` to your GitHub repository. The Sepolia manifest contains public contract addresses and must be included so a fresh checkout can build.
+2. In Netlify, choose **Add new project → Import an existing project**, connect GitHub, and select `NaNcash/nan-protocol`.
+3. Select your production branch. Netlify should read the checked-in settings: base directory `ui`, build command `npm run build:sepolia`, publish directory `dist` (relative to `ui`).
+4. Deploy. Netlify supplies an HTTPS `*.netlify.app` URL. Subsequent pushes to the selected branch automatically rebuild and publish the frontend; pull requests can receive preview deployments.
+5. Open the published URL and confirm the reserve loads and your wallet switches to Ethereum Sepolia. Native Sepolia ETH remains necessary for wallet transaction gas.
+
+No Netlify environment variables are required for the default setup. You can optionally set `VITE_SEPOLIA_RPC_URL` to a browser-accessible Sepolia RPC and trigger a rebuild. Vite embeds that URL in public JavaScript, so use a public endpoint or a provider key intended for browser use with the appropriate domain restrictions. Do not add deployment keys, keystore passwords, or server-only RPC credentials to Netlify. The hosted build reads Sepolia directly and does not use Vite's local `/rpc` proxy.
+
+To reproduce the Netlify build locally:
+
+```bash
+npm ci --prefix ui
+npm run build:sepolia --prefix ui
+```
+
+When deliberately deploying a replacement Sepolia stack, commit the updated `ui/public/sepolia-deployment.json` and push it to update the hosted UI. Netlify's frontend deployments do not send blockchain transactions.
+
+If source verification was not configured, verify the deployed contracts before sharing the public playground. Constructor arguments and addresses are recorded in the Forge broadcast output; use `forge verify-contract --chain 11155111` with the matching contract, encoded arguments, and verifier credentials. Include the reserve-created NaN and INF tokens (both constructors take the reserve address), as well as the collateral, synthetic primary, diagnostic fallback, router, and reserve.
+
+Trust review for this playground: the chosen default is a self-hostable UI, replaceable RPC, injected test wallet, and permissionless faucet/user actions. RPC providers can block access or see requests and IP metadata; users can change the endpoint, rebuild the UI, or call contracts directly using the ABIs in `out/`. Addresses, balances, and transactions are public. The controller can alter synthetic prices and halt priced actions by simulating a feed outage; restoring the feed is necessary for redemption. Expired INF requests can still be finalized and claimed without an oracle. The core reserve is immutable and has no admin collateral-withdrawal function, but governance can change its oracle and parameters. Single-wallet scenario control and unlimited test collateral are accepted testnet compromises. Source and build instructions are available, but the project's existing `UNLICENSED` Solidity notices do not grant an open-source license. This setup is a shared simulation and must never be used for real-value collateral.
+
 ## Deployment
 
 Copy `.env.example` to `.env` and set `AUTHORIZER` to the intended timelock or governance contract, plus the collateral, [direct Chainlink stETH/USD feed](https://data.chain.link/ethereum/mainnet/crypto-usd/steth-usd), Uniswap v3 factory, wstETH/WETH pool, WETH/USDC pool, and their token addresses for the target network. The deployment script retains the TWAP adapter and router configuration for compatibility, and creates the non-upgradeable reserve; its payouts use only the router's primary price. `STETH_USD_FEED` must quote one stETH in USD. The diagnostic fallback treats one USDC as one USD, so a USDC premium above $1 can distort that quote; the reserve does not use it for redemption.

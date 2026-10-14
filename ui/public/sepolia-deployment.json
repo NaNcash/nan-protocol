@@ -1,0 +1,12 @@
+{
+  "chainId": 11155111,
+  "collateral": "0x16B248Bb5c70A391FF09fDe57F4354d1dF6ebFcB",
+  "feed": "0x8d08f5B9d5D1b8239950F1e5a127a13830d2c3Ae",
+  "fallbackOracle": "0x407CA530556a927F0D1d1fe5b4918cE07a298502",
+  "oracle": "0xE35f820930A2DBcb3aE22d062405e201A9a00A77",
+  "reserve": "0xe065f09FE6D129a3f5e22f43beb393e08ee2379E",
+  "deploymentBlock": 11907971,
+  "authorizer": "0x6F9f5b1f896a48fFB2BE1389B5C29dCD980ef0D1",
+  "nan": "0x1B7abdD79A86970e751bc474f85D6c9DCAe986c2",
+  "inf": "0x28Ba6d68c840fe9a71179870c5D202cee4dF2714"
+}
