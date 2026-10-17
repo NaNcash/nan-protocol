@@ -259,10 +259,10 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
     }
 
     function testStatefulFundingContinuesBelowFormerMinimum() public {
-        handler.fund(uint96(500 * WAD));
+        handler.fund(500e18);
         assertLt(reserve.debtRatioBps(), 3_000);
         uint256 supply = reserve.inf().totalSupply();
-        handler.fund(uint96(500 * WAD));
+        handler.fund(500e18);
         assertGt(reserve.inf().totalSupply(), supply);
         assertLt(reserve.debtRatioBps(), 3_000);
         invariantGovernanceConfigurationStaysWithinBounds();
