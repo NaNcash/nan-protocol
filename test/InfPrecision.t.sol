@@ -14,7 +14,7 @@ contract InfPrecisionTest is Test {
 
     function setUp() public {
         collateral = new MockERC20("Wrapped stETH", "wstETH");
-        reserve = new NaNReserve(collateral, new MockOracle(3_000e18), address(this), 3_000, 5_500, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, new MockOracle(3_000e18), address(this), 5_500, 6_500, 10, 10);
         collateral.mint(address(this), 1_000_000e18);
         collateral.mint(VICTIM, 10_000e18);
         collateral.approve(address(reserve), type(uint256).max);

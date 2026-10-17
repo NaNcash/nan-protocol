@@ -19,7 +19,7 @@ One NaN represents one dollar of senior debt while the reserve is solvent. wstET
 
 All conversions round down in favor of the reserve. The minimum reserve used by the debt-ratio limit rounds up.
 
-The debt ratio is `D/R`, with governance-set bounds `0 < min < target < max < 100%`. Funding lowers this ratio, while INF withdrawals raise it. The bands are action limits, not automatic rebalancing: external price moves can put the live ratio outside any band without changing balances.
+The debt ratio is `D/R`, with governance-set bounds `0 < target < max < 100%`. Funding lowers this ratio, while INF withdrawals raise it. The target limits junior withdrawals and the maximum limits senior issuance. These are action limits, not automatic rebalancing: external price moves can put the live ratio outside any band without changing balances.
 
 ## States
 
@@ -34,7 +34,7 @@ The debt ratio is `D/R`, with governance-set bounds `0 < min < target < max < 10
 
 ### Fund
 
-Funding deposits wstETH and mints the permanent INF token. With no supply, it bootstraps at $1; otherwise it uses the greater of current residual NAV and the recovery issuance floor described below. Zero-equity and partial recovery funding are allowed. With outstanding debt, funding is capped so the post-funding ratio remains at or above the minimum; debt-free funding is uncapped. Ordinary NAV quotes use the exact equity/supply ratio, not a rounded per-token price. INF output rounds down.
+Funding deposits wstETH and mints the permanent INF token. With no supply, it bootstraps at $1; otherwise it uses the greater of current residual NAV and the recovery issuance floor described below. Zero-equity and partial recovery funding are allowed. Funding is not capped by the debt ratio, whether debt exists or not. It can cross below any prior ratio or continue from a low-ratio state. At exact NAV it preserves existing per-token NAV apart from rounding, while reducing leverage and sharing future fees across more equity. Ordinary NAV quotes use the exact equity/supply ratio, not a rounded per-token price. INF output rounds down.
 
 ### Mint
 
@@ -74,7 +74,7 @@ This preserves the reserve/debt ratio across redemptions, apart from conservativ
 
 ### Recovery issuance and recapitalization
 
-INF has one immutable address and recapitalization never cancels old balances. `fund` is the sole INF deposit entry point and accepts incremental capital during stress or insolvency. A single deposit need not restore the target ratio. All funding still obeys the minimum debt-ratio cap.
+INF has one immutable address and recapitalization never cancels old balances. `fund` is the sole INF deposit entry point and accepts incremental capital during stress or insolvency. A single deposit need not restore the target ratio. Funding has no debt-ratio cap; the primary-oracle, issuance-floor, precision, slippage, and collateral-transfer checks still apply.
 
 A primary observation of `D/R > max` begins a pricing episode before equity reaches zero. Its initial USD/INF floor is the NAV at the maximum-ratio boundary, rounded up:
 
@@ -126,7 +126,7 @@ Minting, funding (including during insolvency), redemption, and debt-bearing INF
 The reserve has no upgrade path. Its OpenZeppelin two-step owner is the authorizer and may update:
 
 - the complete oracle router, including the effective primary feed, TWAP pools, staleness limit, liquidity thresholds, and fallback premium, by selecting a newly deployed router;
-- the minimum, target, and maximum debt ratios, with strict ordering and maximum below 100%;
+- the target and maximum debt ratios, with `0 < target < max < 10,000` basis points;
 - mint and redemption fees, each capped at 10%.
 - the delay for newly opened INF withdrawal cohorts, between one and 30 days;
 - the batching epoch length, between one hour and seven days, effective at the next boundary.

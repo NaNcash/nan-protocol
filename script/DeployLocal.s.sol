@@ -32,7 +32,7 @@ contract DeployLocal is Script {
         oracle = new WstEthUsdOracle(
             IWstETH(address(collateral)), IAggregatorV3(address(feed)), fallbackOracle, 1 hours, 200
         );
-        reserve = new NaNReserve(collateral, oracle, vm.addr(deployerKey), 3_000, 5_500, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, vm.addr(deployerKey), 5_500, 6_500, 10, 10);
         vm.stopBroadcast();
 
         console2.log("Local wstETH", address(collateral));

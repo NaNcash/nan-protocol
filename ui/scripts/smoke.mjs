@@ -26,6 +26,7 @@ const reserveAbi = parseAbi([
   'function claimDefund(uint256,uint256,uint256,address) returns (uint256,uint256)',
   'function checkpointRecovery()',
   'function infPriceUsd() view returns (uint256)',
+  'function debtRatioBps() view returns (uint256)',
   'function recoveryFloorPriceUsd() view returns (uint256)',
   'function redemptionCollateralPriceUsd() view returns (uint256,bool)',
   'function redeem(uint256,uint256,address) returns (uint256)',
@@ -50,6 +51,20 @@ await send(deployment.collateral, tokenAbi, 'approve', [deployment.reserve, pars
 await send(deployment.reserve, reserveAbi, 'fund', [parseEther('100'), 0n, account.address])
 await send(deployment.reserve, reserveAbi, 'mint', [parseEther('180'), 0n, account.address])
 assert.ok((await read(nan, tokenAbi, 'balanceOf', [account.address])) > 0n)
+
+// Exercise funding beyond the former capacity, then restore the crash scenario.
+const fundingSnapshot = await publicClient.request({ method: 'evm_snapshot' })
+await send(deployment.collateral, tokenAbi, 'faucet', [parseEther('1000')])
+await send(deployment.collateral, tokenAbi, 'approve', [deployment.reserve, parseEther('500')])
+const largeQuote = await read(deployment.reserve, reserveAbi, 'previewFund', [parseEther('500')])
+const infBeforeLargeFund = await read(inf, tokenAbi, 'balanceOf', [account.address])
+await send(deployment.reserve, reserveAbi, 'fund', [parseEther('500'), largeQuote, account.address])
+assert.equal(await read(inf, tokenAbi, 'balanceOf', [account.address]), infBeforeLargeFund + largeQuote)
+assert.ok((await read(deployment.reserve, reserveAbi, 'debtRatioBps')) < 3000n)
+const belowMinimumQuote = await read(deployment.reserve, reserveAbi, 'previewFund', [parseEther('10')])
+await send(deployment.collateral, tokenAbi, 'approve', [deployment.reserve, parseEther('10')])
+await send(deployment.reserve, reserveAbi, 'fund', [parseEther('10'), belowMinimumQuote, account.address])
+assert.equal(await publicClient.request({ method: 'evm_revert', params: [fundingSnapshot] }), true)
 
 await send(deployment.collateral, tokenAbi, 'setStEthPerToken', [parseEther('1.01')])
 await send(deployment.collateral, tokenAbi, 'setStEthPerToken', [parseEther('1')])
@@ -82,4 +97,4 @@ await send(deployment.feed, feedAbi, 'setUnavailable', [false])
 const [, fallbackUsed] = await read(deployment.reserve, reserveAbi, 'redemptionCollateralPriceUsd')
 assert.equal(fallbackUsed, false)
 await send(deployment.reserve, reserveAbi, 'redeem', [parseEther('1000'), 0n, account.address])
-process.stdout.write('Local faucet → fund → mint → crash → insolvent fund → withdraw → outage halt → restored redemption: PASS\n')
+process.stdout.write('Local faucet → fund → mint → uncapped fund below 30% → crash → insolvent fund → withdraw → outage halt → restored redemption: PASS\n')

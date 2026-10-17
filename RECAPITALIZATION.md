@@ -45,8 +45,10 @@ namespace fixed at 1. INF itself is immutable; there is no replacement machinery
 Queued shares remain subject to dilution, and settled collateral stays excluded
 from reserve backing. Withdrawals retain the three-day default delay; partial
 fills can continue until expiry. Senior redemptions retain the solvency-based
-payout rules and require a fresh primary. The minimum debt ratio still caps
-funding; a single deposit no longer needs to restore the target ratio.
+payout rules and require a fresh primary. Funding has no debt-ratio cap; a single
+deposit need not restore the target ratio and may reduce the ratio below 30%. Normal NAV funding preserves the
+per-token NAV of existing holders apart from rounding. Recovery funding retains
+the greater-of-NAV-and-floor price even when a large deposit crosses that ratio.
 
 ## Review gates
 

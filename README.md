@@ -11,7 +11,7 @@ This is an **unaudited prototype**. Do not deploy it with real value before inde
 
 | Operation | Input | Output | Availability |
 | --- | --- | --- | --- |
-| `fund` | wstETH | Permanent INF at the greater of NAV and the recovery issuance floor | Fresh primary oracle; post-funding debt ratio at or above the minimum when debt exists; incremental insolvent funding allowed |
+| `fund` | wstETH | Permanent INF at the greater of NAV and the recovery issuance floor | Fresh primary oracle and minimum INF precision; no debt-ratio funding cap; incremental insolvent funding allowed |
 | `mint` | wstETH | NaN less mint fee | Fresh primary oracle, active INF, and post-mint debt ratio at or below the maximum |
 | `requestDefund` | INF | A locked withdrawal request | One request per address and cohort; no oracle quote is fixed |
 | `settleDefundEpoch` | Matured cohort | Accumulated wstETH payout; claims open on full fill or expiry | After the cohort's snapshotted delay; fresh primary oracle and target debt-ratio limit when debt exists |
@@ -19,11 +19,11 @@ This is an **unaudited prototype**. Do not deploy it with real value before inde
 | `redeem` | NaN | wstETH less redemption fee | Fresh primary oracle; pro rata and fee-free when insolvent |
 | `checkpointRecovery` | None | Persisted pricing-episode observation | Permissionless; fresh primary oracle required |
 
-The reserve is non-upgradeable and has an OpenZeppelin two-step owner serving as its authorizer. The authorizer can replace the entire oracle router and update the ordered minimum, target, and maximum debt ratios, mint/redemption fees, INF withdrawal delay, batching epoch length, and recovery-price halving period for future episodes. It cannot mint tokens, pause user actions, withdraw collateral, change the collateral token, or rewrite the senior/junior claim rules. Ownership cannot be renounced. Use a timelocked governance contract as the authorizer in production; these powers can materially affect users.
+The reserve is non-upgradeable and has an OpenZeppelin two-step owner serving as its authorizer. The authorizer can replace the entire oracle router and update the ordered target and maximum debt ratios, mint/redemption fees, INF withdrawal delay, batching epoch length, and recovery-price halving period for future episodes. It cannot mint tokens, pause user actions, withdraw collateral, change the collateral token, or rewrite the senior/junior claim rules. Ownership cannot be renounced. Use a timelocked governance contract as the authorizer in production; these powers can materially affect users.
 
 ## Safety properties
 
-- With debt outstanding, INF funding cannot push `D/R` below `minDebtRatioBps`; bootstrap funding with no debt is uncapped. INF withdrawal settlement preserves `targetDebtRatioBps`, and minting preserves `maxDebtRatioBps`. The ratios must satisfy `0 < min < target < max < 10,000` basis points.
+- INF funding has no debt-ratio cap, including with outstanding debt. Normal NAV funding preserves existing per-token NAV apart from rounding; investors choose the resulting leverage and fee participation. INF withdrawal settlement preserves `targetDebtRatioBps`, and minting preserves `maxDebtRatioBps`. The ratios must satisfy `0 < target < max < 10,000` basis points.
 - INF withdrawals settle by cohort after the configured delay, initially three days, plus the remaining batching time. Governance can set the delay between one and 30 days and the batching epoch between one hour and seven days (initially one day). Epoch-length updates apply at the current epoch's closing boundary, preserving its ID and end time. Each cohort snapshots its maturity when its first request arrives, so later governance changes cannot shorten or extend pending requests. Each cohort has a one-day settlement window. Zero-capacity settlement reverts without consuming eligibility; partial fills accumulate and can be retried in the same window. Claims open on full fill or permissionless expiry, which preserves accumulated collateral and refunds unfilled INF. Settlement uses the then-current price, not the request-time price. Limited safe exit capacity is allocated pro rata within a cohort.
 - Settled but unclaimed wstETH is excluded from reserve backing. Pending INF remains in total supply until its filled portion is burned at settlement.
 - Insolvent NaN redemption is pro rata, so early redeemers cannot take $1 while leaving later holders with the loss.
@@ -176,7 +176,11 @@ forge script script/Deploy.s.sol:Deploy --rpc-url "$RPC_URL"
 forge script script/Deploy.s.sol:Deploy --rpc-url "$RPC_URL" --broadcast --verify
 ```
 
-The sample defaults (30% minimum, 55% target, 65% maximum debt ratio, 10 bp mint/redemption fees, and a one-day recovery-price halving period) are test parameters, not an economic recommendation. The three-day INF withdrawal delay is separate from recovery-price decay. A deployment must also establish an adequate initial INF buffer with `fund` before opening NaN minting to users. Verify that `reserve.owner()` is the intended authorizer immediately after deployment. This change requires a new deployment; it cannot upgrade an existing immutable reserve.
+The sample defaults (55% target and 65% maximum debt ratios, 10 bp mint/redemption fees, and a one-day recovery-price halving period) are test parameters, not an economic recommendation. The three-day INF withdrawal delay is separate from recovery-price decay. A deployment must also establish an adequate initial INF buffer with `fund` before opening NaN minting to users. Verify that `reserve.owner()` is the intended authorizer immediately after deployment.
+
+This change requires a new deployment; it cannot upgrade an existing immutable reserve. The constructor and `setDebtRatios(targetBps, maxBps)` accept only target and maximum ratios, and `DebtRatiosUpdated` emits those two values. The minimum-ratio parameter, `maxFundableUsd()`, and `DebtRatioTooLow` have been removed; integrations should quote specific collateral amounts with `previewFund` rather than derive funding capacity.
+
+The checked-in Sepolia manifest refers to the earlier immutable deployment; redeploy and regenerate the manifest to use the revised funding rules. Existing reserves retain their old minimum, which cannot be set to zero.
 
 ## Integration notes
 

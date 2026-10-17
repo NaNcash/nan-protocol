@@ -25,7 +25,6 @@ contract Deploy is Script {
         uint256 maxStaleness;
         uint256 fallbackPremiumBps;
         address authorizer;
-        uint256 minDebtRatioBps;
         uint256 targetDebtRatioBps;
         uint256 maxDebtRatioBps;
         uint256 mintFeeBps;
@@ -48,7 +47,6 @@ contract Deploy is Script {
             IERC20(config.wstETH),
             oracle,
             config.authorizer,
-            config.minDebtRatioBps,
             config.targetDebtRatioBps,
             config.maxDebtRatioBps,
             config.mintFeeBps,
@@ -80,7 +78,6 @@ contract Deploy is Script {
         config.maxStaleness = vm.envOr("MAX_STALENESS", uint256(1 hours));
         config.fallbackPremiumBps = vm.envOr("FALLBACK_PREMIUM_BPS", uint256(200));
         config.authorizer = vm.envAddress("AUTHORIZER");
-        config.minDebtRatioBps = vm.envOr("MIN_DEBT_RATIO_BPS", uint256(3_000));
         config.targetDebtRatioBps = vm.envOr("TARGET_DEBT_RATIO_BPS", uint256(5_500));
         config.maxDebtRatioBps = vm.envOr("MAX_DEBT_RATIO_BPS", uint256(6_500));
         config.mintFeeBps = vm.envOr("MINT_FEE_BPS", uint256(10));

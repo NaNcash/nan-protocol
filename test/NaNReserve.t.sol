@@ -22,7 +22,7 @@ contract NaNReserveTest is Test {
     function setUp() public {
         wstETH = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
-        reserve = new NaNReserve(wstETH, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        reserve = new NaNReserve(wstETH, oracle, address(this), 6_450, 6_500, 10, 10);
         nan = reserve.nan();
         inf = reserve.inf();
 
@@ -78,18 +78,27 @@ contract NaNReserveTest is Test {
     function testConstructorRejectsNon18DecimalCollateral() public {
         MockERC20Decimals usdc = new MockERC20Decimals("USD Coin", "USDC", 6);
         vm.expectRevert(NaNReserve.UnsupportedCollateralDecimals.selector);
-        new NaNReserve(usdc, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        new NaNReserve(usdc, oracle, address(this), 6_450, 6_500, 10, 10);
     }
 
     function testConstructorRejectsInvalidParameters() public {
         vm.expectRevert(NaNReserve.ZeroAddress.selector);
-        new NaNReserve(MockERC20(address(0)), oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        new NaNReserve(MockERC20(address(0)), oracle, address(this), 6_450, 6_500, 10, 10);
 
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        new NaNReserve(wstETH, oracle, address(this), 5_000, 6_450, 10_000, 10, 10);
+        new NaNReserve(wstETH, oracle, address(this), 6_450, 10_000, 10, 10);
 
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        new NaNReserve(wstETH, oracle, address(this), 5_000, 6_450, 6_500, 10_000, 10);
+        new NaNReserve(wstETH, oracle, address(this), 6_450, 6_500, 10_000, 10);
+    }
+
+    function testConstructorRejectsInvalidDebtRatioOrdering() public {
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, address(this), 0, 6_500, 10, 10);
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, address(this), 6_500, 6_500, 10, 10);
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, address(this), 6_501, 6_500, 10, 10);
     }
 
     function testInitialFundingStartsInfAtOneDollar() public {
@@ -396,7 +405,7 @@ contract NaNReserveTest is Test {
 
     function testRejectsFeeOnTransferCollateral() public {
         MockFeeOnTransferERC20 feeToken = new MockFeeOnTransferERC20();
-        NaNReserve feeReserve = new NaNReserve(feeToken, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        NaNReserve feeReserve = new NaNReserve(feeToken, oracle, address(this), 6_450, 6_500, 10, 10);
         feeToken.mint(ALICE, 100 * WAD);
         vm.startPrank(ALICE);
         feeToken.approve(address(feeReserve), type(uint256).max);

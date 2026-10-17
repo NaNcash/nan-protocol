@@ -20,7 +20,7 @@ contract WithdrawalContinuationTest is Test {
         vm.warp(10 days);
         collateral = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000e18);
-        reserve = new NaNReserve(collateral, oracle, address(this), 3_000, 5_500, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 5_500, 6_500, 10, 10);
         collateral.mint(address(this), 100e18);
         collateral.mint(ATTACKER, 100e18);
         collateral.approve(address(reserve), type(uint256).max);

@@ -20,7 +20,7 @@ contract GovernanceTest is Test {
     function setUp() public {
         collateral = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
-        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 6_450, 6_500, 10, 10);
         collateral.mint(ALICE, 1_000 * WAD);
         collateral.mint(BOB, 1_000 * WAD);
         vm.prank(ALICE);
@@ -40,7 +40,7 @@ contract GovernanceTest is Test {
         MockOracle replacement = new MockOracle(3_100 * WAD);
         vm.startPrank(ALICE);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, ALICE));
-        reserve.setDebtRatios(4_000, 5_500, 6_500);
+        reserve.setDebtRatios(5_500, 6_500);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, ALICE));
         reserve.setFees(20, 30);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, ALICE));
@@ -110,13 +110,13 @@ contract GovernanceTest is Test {
 
     function testInvalidConfigurationUpdatesAreRejected() public {
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        reserve.setDebtRatios(0, 5_500, 6_500);
+        reserve.setDebtRatios(0, 6_500);
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        reserve.setDebtRatios(5_500, 5_500, 6_500);
+        reserve.setDebtRatios(6_501, 6_500);
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        reserve.setDebtRatios(5_000, 6_500, 6_500);
+        reserve.setDebtRatios(6_500, 6_500);
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
-        reserve.setDebtRatios(5_000, 6_500, 10_000);
+        reserve.setDebtRatios(6_500, 10_000);
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
         reserve.setFees(1_001, 10);
         vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
@@ -128,6 +128,19 @@ contract GovernanceTest is Test {
         MockOracle invalidOracle = new MockOracle(0);
         vm.expectRevert(NaNReserve.InvalidPrice.selector);
         reserve.setOracle(invalidOracle);
+    }
+
+    function testDebtRatioUpdatesEmitRevisedEventAndAcceptBoundaryValues() public {
+        vm.expectEmit(false, false, false, true, address(reserve));
+        emit NaNReserve.DebtRatiosUpdated(1, 2);
+        reserve.setDebtRatios(1, 2);
+        assertEq(reserve.targetDebtRatioBps(), 1);
+        assertEq(reserve.maxDebtRatioBps(), 2);
+        vm.expectEmit(false, false, false, true, address(reserve));
+        emit NaNReserve.DebtRatiosUpdated(9_998, 9_999);
+        reserve.setDebtRatios(9_998, 9_999);
+        assertEq(reserve.targetDebtRatioBps(), 9_998);
+        assertEq(reserve.maxDebtRatioBps(), 9_999);
     }
 
     function testChangedFeesAffectNewTrades() public {
@@ -143,24 +156,23 @@ contract GovernanceTest is Test {
         assertEq(collateralOut, 9_800 * WAD / 1_000);
     }
 
-    function testMinCapsFundingTargetCapsWithdrawalsAndMaxCapsMinting() public {
+    function testTargetCapsWithdrawalsAndMaxCapsMinting() public {
         _bootstrapAndMint();
-        assertEq(reserve.maxFundableUsd(), 238_920 * WAD);
         assertGt(reserve.maxDefundableUsd(), 0);
 
-        reserve.setDebtRatios(5_000, 6_400, 6_410);
+        reserve.setDebtRatios(6_400, 6_410);
         assertGt(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
         assertEq(reserve.maxDefundableUsd(), 0);
         vm.prank(BOB);
         vm.expectRevert(NaNReserve.DebtRatioTooHigh.selector);
         reserve.mint(1 * WAD, 0, BOB);
-        reserve.setDebtRatios(5_000, 6_450, 6_500);
+        reserve.setDebtRatios(6_450, 6_500);
 
         vm.prank(ALICE);
         reserve.fund(79 * WAD, 0, ALICE);
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.DebtRatioTooLow.selector);
         reserve.fund(1 * WAD, 0, ALICE);
+        assertLt(reserve.debtRatioBps(), 5_000);
     }
 
     function testUpdatedTargetAppliesAtWithdrawalSettlement() public {
@@ -170,7 +182,7 @@ contract GovernanceTest is Test {
         (uint256 series, uint256 epoch) = reserve.requestDefund(1_000 * WAD);
         vm.stopPrank();
 
-        reserve.setDebtRatios(5_000, 6_400, 6_500);
+        reserve.setDebtRatios(6_400, 6_500);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         vm.expectRevert(NaNReserve.NoWithdrawalCapacity.selector);
         reserve.settleDefundEpoch(series, epoch);
@@ -192,19 +204,8 @@ contract GovernanceTest is Test {
         reserve.setOracle(replacement);
         assertEq(address(reserve.oracle()), address(replacement));
         assertEq(reserve.collateralPriceUsd(), 3_100 * WAD);
-        assertGt(reserve.maxFundableUsd(), 0);
-    }
-
-    function testInsolventFundingAlsoRespectsMinimumRatio() public {
-        _bootstrapAndMint();
-        oracle.setPrice(1_500 * WAD);
+        uint256 quote = reserve.previewFund(WAD);
         vm.prank(ALICE);
-        vm.expectRevert(NaNReserve.DebtRatioTooLow.selector);
-        reserve.fund(440 * WAD, 0, ALICE);
-
-        vm.prank(ALICE);
-        reserve.fund(278 * WAD, 0, ALICE);
-        assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
-        assertGe(reserve.debtRatioBps(), reserve.minDebtRatioBps());
+        assertEq(reserve.fund(WAD, quote, ALICE), quote);
     }
 }
