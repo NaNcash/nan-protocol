@@ -81,3 +81,14 @@ print(f"Old INF ownership: {old_inf / s.inf:.2%}; issuance floor: ${floor_price:
 s.reserve *= 1.25
 show("after 25% rebound", s)
 print(f"Old INF residual claim: ${s.equity * old_inf / s.inf:,.0f}")
+
+# Funding may reduce leverage below 30%. At normal NAV it preserves the old
+# holders' per-token claim; investors choose whether that leverage suits them.
+s = State(reserve=100, nan=30, inf=70)
+show("30% debt ratio", s)
+funding_in = 10
+nav_before = s.inf_price
+s.inf += funding_in / s.inf_price
+s.reserve += funding_in
+assert abs(s.inf_price - nav_before) < 1e-12
+show("funded below 30%", s)

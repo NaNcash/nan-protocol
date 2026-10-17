@@ -424,6 +424,42 @@ contract InfRecoveryTest is Test {
         reserve.fund(WAD, 0, BOB);
     }
 
+    function testLargeRecoveryFundingCrossesFormerMinimumAtFloor() public {
+        _crash();
+        uint256 floor = reserve.recoveryFloorPriceUsd();
+        uint256 oldSupply = inf.totalSupply();
+        uint256 debt = reserve.debtUsd();
+        uint256 amount = 2_000 * WAD;
+        uint256 quote = reserve.previewFund(amount);
+        assertEq(quote, Math.mulDiv(amount, 1_500 * WAD, floor));
+        vm.prank(BOB);
+        assertEq(reserve.fund(amount, quote, BOB), quote);
+        assertLt(reserve.debtRatioBps(), 3_000);
+        assertEq(reserve.debtUsd(), debt);
+        assertEq(inf.balanceOf(ALICE), oldSupply);
+        assertLe(Math.mulDiv(reserve.equityUsd(), quote, inf.totalSupply()), amount * 1_500);
+        // Crossing the former minimum does not erase a still-binding issuance floor.
+        assertGt(reserve.recoveryFloorPriceUsd(), reserve.infPriceUsd());
+        uint256 nextQuote = reserve.previewFund(WAD);
+        assertEq(nextQuote, Math.mulDiv(1_500 * WAD, WAD, floor));
+        vm.prank(BOB);
+        assertEq(reserve.fund(WAD, nextQuote, BOB), nextQuote);
+    }
+
+    function testSolventRecoveryFundingCrossesFormerMinimumAtFloor() public {
+        oracle.setPrice(2_200 * WAD);
+        reserve.checkpointRecovery();
+        assertGt(reserve.equityUsd(), 0);
+        uint256 floor = reserve.recoveryFloorPriceUsd();
+        assertGt(floor, reserve.infPriceUsd());
+        uint256 quote = reserve.previewFund(2_000 * WAD);
+        assertEq(quote, Math.mulDiv(4_400_000 * WAD, WAD, floor));
+        vm.prank(BOB);
+        assertEq(reserve.fund(2_000 * WAD, quote, BOB), quote);
+        assertLt(reserve.debtRatioBps(), 3_000);
+        assertGt(reserve.recoveryFloorPriceUsd(), reserve.infPriceUsd());
+    }
+
     function testFuzzSplittingFundingCannotIncreaseIssuance(
         uint96 rawAmount,
         uint96 rawSplit,

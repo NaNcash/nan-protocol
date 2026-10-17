@@ -92,6 +92,15 @@ contract NaNReserveTest is Test {
         new NaNReserve(wstETH, oracle, address(this), 6_450, 6_500, 10_000, 10);
     }
 
+    function testConstructorRejectsInvalidDebtRatioOrdering() public {
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, address(this), 0, 6_500, 10, 10);
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, address(this), 6_500, 6_500, 10, 10);
+        vm.expectRevert(NaNReserve.InvalidConfiguration.selector);
+        new NaNReserve(wstETH, oracle, address(this), 6_501, 6_500, 10, 10);
+    }
+
     function testInitialFundingStartsInfAtOneDollar() public {
         _bootstrap();
         assertEq(inf.balanceOf(ALICE), 300_000 * WAD);

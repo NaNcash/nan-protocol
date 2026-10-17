@@ -130,6 +130,19 @@ contract GovernanceTest is Test {
         reserve.setOracle(invalidOracle);
     }
 
+    function testDebtRatioUpdatesEmitRevisedEventAndAcceptBoundaryValues() public {
+        vm.expectEmit(false, false, false, true, address(reserve));
+        emit NaNReserve.DebtRatiosUpdated(1, 2);
+        reserve.setDebtRatios(1, 2);
+        assertEq(reserve.targetDebtRatioBps(), 1);
+        assertEq(reserve.maxDebtRatioBps(), 2);
+        vm.expectEmit(false, false, false, true, address(reserve));
+        emit NaNReserve.DebtRatiosUpdated(9_998, 9_999);
+        reserve.setDebtRatios(9_998, 9_999);
+        assertEq(reserve.targetDebtRatioBps(), 9_998);
+        assertEq(reserve.maxDebtRatioBps(), 9_999);
+    }
+
     function testChangedFeesAffectNewTrades() public {
         vm.prank(ALICE);
         reserve.fund(100 * WAD, 0, ALICE);

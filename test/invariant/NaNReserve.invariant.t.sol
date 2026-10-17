@@ -42,7 +42,16 @@ contract NaNReserveHandler is Test {
 
     function fund(uint96 rawAmount) external {
         uint256 amount = bound(uint256(rawAmount), 1e12, 500 * WAD);
-        try reserve.fund(amount, 0, address(this)) {} catch {}
+        uint256 debtBefore = reserve.debtUsd();
+        uint256 reserveBefore = reserve.reserveUsd();
+        uint256 supplyBefore = reserve.inf().totalSupply();
+        try reserve.previewFund(amount) returns (uint256 quote) {
+            uint256 issued = reserve.fund(amount, quote, address(this));
+            assertEq(issued, quote);
+            assertEq(reserve.debtUsd(), debtBefore);
+            assertGe(reserve.reserveUsd(), reserveBefore);
+            assertEq(reserve.inf().totalSupply(), supplyBefore + issued);
+        } catch {}
     }
 
     function mint(uint96 rawAmount) external {
@@ -247,6 +256,17 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         invariantDebtAlwaysEqualsNanSupply();
         invariantClaimableWithdrawalCollateralIsNotReserveBacking();
         invariantExistingWithdrawalCohortsKeepTheirMaturity();
+    }
+
+    function testStatefulFundingContinuesBelowFormerMinimum() public {
+        handler.fund(uint96(500 * WAD));
+        assertLt(reserve.debtRatioBps(), 3_000);
+        uint256 supply = reserve.inf().totalSupply();
+        handler.fund(uint96(500 * WAD));
+        assertGt(reserve.inf().totalSupply(), supply);
+        assertLt(reserve.debtRatioBps(), 3_000);
+        invariantGovernanceConfigurationStaysWithinBounds();
+        invariantReportedJuniorClaimsNeverExceedEquity();
     }
 
     function invariantDebtAlwaysEqualsNanSupply() public view {

@@ -6,7 +6,6 @@ random.seed(0x4E414E)
 BPS=10_000
 MAX_DR=6_500
 TARGET_DR=5_500
-MIN_DR=3_000
 MINT_FEE=10
 REDEEM_FEE=10
 
@@ -62,6 +61,9 @@ WAD = 10**18
 
 
 def funding_quote(deposit, reserve, debt, supply, floor_price):
+    if supply == 0:
+        assert debt == 0
+        return deposit
     equity = max(reserve - debt, 0)
     if equity * WAD // supply < floor_price:
         return deposit * WAD // floor_price
@@ -70,10 +72,10 @@ def funding_quote(deposit, reserve, debt, supply, floor_price):
 
 for _ in range(100_000):
     debt = random.randrange(WAD, 10**9 * WAD)
-    reserve = random.randrange(0, debt * 2)
+    reserve = random.randrange(0, debt * 10)
     supply = random.randrange(WAD, 10**12 * WAD)
-    max_deposit = debt * BPS // MIN_DR - reserve
-    deposit = random.randrange(2, max_deposit)
+    # Independent USD bounds include very low ratios and large recapitalizations.
+    deposit = random.randrange(2, 10**10 * WAD)
     split = random.randrange(1, deposit)
     floor_price = random.randrange(1, 10 * WAD)
     minted = funding_quote(deposit, reserve, debt, supply, floor_price)
@@ -86,13 +88,33 @@ for _ in range(100_000):
     nav = equity * WAD // total_supply
     if nav * total_supply // WAD > equity:
         raise AssertionError('reported junior claims exceed equity')
-    if debt * BPS < (reserve + deposit) * MIN_DR:
-        raise AssertionError('funding breached minimum debt ratio')
     if reserve <= debt and equity * minted // total_supply > deposit:
         raise AssertionError('recapitalizer received more NAV than contributed')
     # The old supply persists; dilution changes ownership, not token identity.
     if total_supply < supply:
         raise AssertionError('existing INF was cancelled')
+
+# Normal NAV funding below 30% preserves existing claims within rounding.
+# Independent collateral deposits have no ratio-based capacity restriction.
+for _ in range(100_000):
+    debt = random.randrange(0, 10**9 * WAD)
+    reserve = debt * 4 + random.randrange(WAD, 10**10 * WAD)
+    supply = random.randrange(WAD, 10**12 * WAD)
+    deposit = random.randrange(2, 10**10 * WAD)
+    split = random.randrange(1, deposit)
+    equity = reserve - debt
+    minted = funding_quote(deposit, reserve, debt, supply, 0)
+    old_claim = (equity + deposit) * supply // (supply + minted)
+    if not equity <= old_claim <= equity + (equity + supply - 1) // supply:
+        raise AssertionError('NAV funding diluted existing claims or lost more than one base share')
+    first = funding_quote(split, reserve, debt, supply, 0)
+    second = funding_quote(deposit - split, reserve + split, debt, supply + first, 0)
+    if first + second > minted:
+        raise AssertionError('splitting normal funding increased issuance')
+    # Bootstrap and subsequent debt-free funding keep the same exact NAV.
+    bootstrap = funding_quote(deposit, 0, 0, 0, 0)
+    if bootstrap != deposit or funding_quote(deposit, deposit, 0, bootstrap, 0) != deposit:
+        raise AssertionError('debt-free funding price changed')
 
 # The floor must remain positive and nonincreasing, including very long gaps.
 def decayed_floor(initial, elapsed, period):
