@@ -14,7 +14,6 @@ const errorAbi = parseAbi([
   'error InvalidPrice()',
   'error UnsupportedCollateralDecimals()',
   'error DebtRatioTooHigh()',
-  'error DebtRatioTooLow()',
   'error NoDebt()',
   'error NoJuniorCapital()',
   'error Slippage()',
@@ -594,7 +593,6 @@ function friendlyError(error) {
   const name = cause?.data?.errorName
   const messages = {
     DebtRatioTooHigh: 'The debt ratio is too high. Fund INF or reduce the NaN mint amount.',
-    DebtRatioTooLow: 'This funding would push the debt ratio below the minimum. Try a smaller amount.',
     NoJuniorCapital: 'Fund INF before minting NaN.',
     Slippage: 'The quote changed. Refresh and try again.',
     InsufficientInfPrecision: 'This amount is too small for a precise INF quote. Increase the amount.',

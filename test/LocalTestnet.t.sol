@@ -23,7 +23,7 @@ contract LocalTestnetTest is Test {
         oracle = new WstEthUsdOracle(
             IWstETH(address(collateral)), IAggregatorV3(address(feed)), fallbackOracle, 1 hours, 200
         );
-        reserve = new NaNReserve(collateral, oracle, address(this), 3_000, 5_500, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 5_500, 6_500, 10, 10);
         collateral.faucet(500 ether);
         collateral.approve(address(reserve), type(uint256).max);
     }

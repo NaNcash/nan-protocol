@@ -40,7 +40,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     error InvalidPrice();
     error UnsupportedCollateralDecimals();
     error DebtRatioTooHigh();
-    error DebtRatioTooLow();
     error NoDebt();
     error NoJuniorCapital();
     error Slippage();
@@ -82,8 +81,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     Recovery public recovery;
     uint256 public recoveryHalvingPeriod = 1 days;
 
-    /// @notice Debt / reserve bounds in basis points, ordered min < target < max.
-    uint256 public minDebtRatioBps;
+    /// @notice Debt / reserve bounds in basis points, ordered 0 < target < max < BPS.
     uint256 public targetDebtRatioBps;
     uint256 public maxDebtRatioBps;
     uint256 public mintFeeBps;
@@ -141,7 +139,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     event RecoveryEnded();
     event RecoveryHalvingPeriodUpdated(uint256 previousPeriod, uint256 newPeriod);
     event OracleUpdated(address indexed previousOracle, address indexed newOracle);
-    event DebtRatiosUpdated(uint256 minDebtRatioBps, uint256 targetDebtRatioBps, uint256 maxDebtRatioBps);
+    event DebtRatiosUpdated(uint256 targetDebtRatioBps, uint256 maxDebtRatioBps);
     event FeesUpdated(uint256 mintFeeBps, uint256 redeemFeeBps);
     event InfWithdrawalDelayUpdated(uint256 previousDelay, uint256 newDelay);
     event InfWithdrawalEpochUpdated(uint256 previousLength, uint256 newLength, uint256 effectiveAt);
@@ -150,7 +148,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         IERC20 collateral_,
         IReserveOracle oracle_,
         address authorizer_,
-        uint256 minDebtRatioBps_,
         uint256 targetDebtRatioBps_,
         uint256 maxDebtRatioBps_,
         uint256 mintFeeBps_,
@@ -163,7 +160,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         collateral = collateral_;
         _setOracle(oracle_);
-        _setDebtRatios(minDebtRatioBps_, targetDebtRatioBps_, maxDebtRatioBps_);
+        _setDebtRatios(targetDebtRatioBps_, maxDebtRatioBps_);
         _setFees(mintFeeBps_, redeemFeeBps_);
 
         nan = new NaNToken(address(this));
@@ -175,8 +172,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         _setOracle(newOracle);
     }
 
-    function setDebtRatios(uint256 minBps, uint256 targetBps, uint256 maxBps) external onlyOwner {
-        _setDebtRatios(minBps, targetBps, maxBps);
+    function setDebtRatios(uint256 targetBps, uint256 maxBps) external onlyOwner {
+        _setDebtRatios(targetBps, maxBps);
     }
 
     function setFees(uint256 mintBps, uint256 redeemBps) external onlyOwner {
@@ -233,14 +230,13 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         emit OracleUpdated(previous, address(newOracle));
     }
 
-    function _setDebtRatios(uint256 minBps, uint256 targetBps, uint256 maxBps) internal {
-        if (minBps == 0 || minBps >= targetBps || targetBps >= maxBps || maxBps >= BPS) {
+    function _setDebtRatios(uint256 targetBps, uint256 maxBps) internal {
+        if (targetBps == 0 || targetBps >= maxBps || maxBps >= BPS) {
             revert InvalidConfiguration();
         }
-        minDebtRatioBps = minBps;
         targetDebtRatioBps = targetBps;
         maxDebtRatioBps = maxBps;
-        emit DebtRatiosUpdated(minBps, targetBps, maxBps);
+        emit DebtRatiosUpdated(targetBps, maxBps);
     }
 
     function _setFees(uint256 mintBps, uint256 redeemBps) internal {
@@ -361,16 +357,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         return reserve - minReserve;
     }
 
-    /// @notice Approximate additional USD of INF funding allowed before reaching the minimum debt ratio.
-    /// @dev With no debt, initial junior funding is uncapped.
-    function maxFundableUsd() public view returns (uint256) {
-        uint256 debt = debtUsd();
-        if (debt == 0) return type(uint256).max;
-        uint256 reserve = reserveUsd();
-        uint256 maxReserve = Math.mulDiv(debt, BPS, minDebtRatioBps);
-        return reserve >= maxReserve ? 0 : maxReserve - reserve;
-    }
-
     /// @notice Effective issuance floor after a fresh primary observation; zero outside recovery pricing.
     /// @dev This view does not persist an observation or start the clock.
     function recoveryFloorPriceUsd() public view returns (uint256) {
@@ -395,7 +381,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 reserve = _collateralToUsd(reserveCollateral(), price);
         uint256 debt = debtUsd();
         uint256 supply = inf.totalSupply();
-        _checkFundingCap(collateralIn, price, debt);
         return _fundingQuote(
             _collateralToUsd(collateralIn, price),
             reserve,
@@ -428,7 +413,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
         uint256 debt = debtUsd();
         uint256 infSupply = inf.totalSupply();
-        _checkFundingCap(collateralIn, price, debt);
         _syncRecovery(reserveBefore, debt, infSupply);
         infOut = _fundingQuote(
             _collateralToUsd(collateralIn, price), reserveBefore, debt, infSupply, _decayedFloor(recovery)
@@ -656,15 +640,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     function _precisionSafeBurn(uint256 amount, uint256 supply) internal pure returns (uint256) {
         if (amount == supply) return amount;
         return Math.min(amount, supply - MIN_INF_SUPPLY);
-    }
-
-    function _checkFundingCap(uint256 collateralIn, uint256 price, uint256 debt) internal view {
-        if (
-            debt != 0
-                && _collateralToUsd(reserveCollateral() + collateralIn, price) > Math.mulDiv(debt, BPS, minDebtRatioBps)
-        ) {
-            revert DebtRatioTooLow();
-        }
     }
 
     function _fundingQuote(uint256 usdIn, uint256 reserve, uint256 debt, uint256 supply, uint256 floor)

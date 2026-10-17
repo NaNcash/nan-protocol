@@ -30,7 +30,7 @@ contract OracleFallbackTest is Test {
         oracle = new WstEthUsdOracle(
             IWstETH(address(accountingRate)), IAggregatorV3(address(primaryFeed)), fallbackOracle, 1 hours, 200
         );
-        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 6_450, 6_500, 10, 10);
 
         collateral.mint(ALICE, 200 * WAD);
         collateral.mint(BOB, 200 * WAD);

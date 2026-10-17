@@ -22,7 +22,7 @@ contract InfRecoveryTest is Test {
         vm.warp(10 days);
         collateral = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
-        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 6_450, 6_500, 10, 10);
         inf = reserve.inf();
         collateral.mint(ALICE, 10_000 * WAD);
         collateral.mint(BOB, 10_000 * WAD);
@@ -120,7 +120,7 @@ contract InfRecoveryTest is Test {
     }
 
     function testReboundBetweenTargetAndMaxResetsEpisodeBeforeNextCrash() public {
-        reserve.setDebtRatios(5_000, 5_500, 6_500);
+        reserve.setDebtRatios(5_500, 6_500);
         assertGt(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
         assertLe(reserve.debtRatioBps(), reserve.maxDebtRatioBps());
 
@@ -277,7 +277,7 @@ contract InfRecoveryTest is Test {
         _crash();
         (uint256 start, uint256 initial, uint256 period, uint256 exitRatio) = reserve.recovery();
         reserve.setRecoveryHalvingPeriod(7 days);
-        reserve.setDebtRatios(4_000, 5_000, 6_000);
+        reserve.setDebtRatios(5_000, 6_000);
         vm.warp(block.timestamp + 1 days);
         reserve.checkpointRecovery();
         (uint256 newStart, uint256 newInitial, uint256 newPeriod, uint256 newExit) = reserve.recovery();
@@ -298,7 +298,7 @@ contract InfRecoveryTest is Test {
     function _prepareReplacementRecovery() internal {
         _crash();
         vm.warp(block.timestamp + 12 hours);
-        reserve.setDebtRatios(4_000, 5_000, 6_000);
+        reserve.setDebtRatios(5_000, 6_000);
         reserve.setRecoveryHalvingPeriod(7 days);
         oracle.setPrice(3_000 * WAD);
         // The old 65% exit threshold is met, but the new 60% maximum is breached.
@@ -424,15 +424,6 @@ contract InfRecoveryTest is Test {
         reserve.fund(WAD, 0, BOB);
     }
 
-    function testCapRemainsEnforcedDuringRecovery() public {
-        _crash();
-        vm.expectRevert(NaNReserve.DebtRatioTooLow.selector);
-        reserve.previewFund(440 * WAD);
-        vm.prank(BOB);
-        vm.expectRevert(NaNReserve.DebtRatioTooLow.selector);
-        reserve.fund(440 * WAD, 0, BOB);
-    }
-
     function testFuzzSplittingFundingCannotIncreaseIssuance(
         uint96 rawAmount,
         uint96 rawSplit,
@@ -443,8 +434,8 @@ contract InfRecoveryTest is Test {
         oracle.setPrice(price);
         reserve.checkpointRecovery();
         vm.warp(block.timestamp + bound(uint256(rawTime), 0, 300 days));
-        uint256 maxAmount = Math.min(400 * WAD, reserve.maxFundableUsd() * WAD / price);
-        uint256 amount = bound(uint256(rawAmount), 2e12, maxAmount);
+        // Bound collateral directly; funding has no debt-ratio capacity limit.
+        uint256 amount = bound(uint256(rawAmount), 2e12, 5_000 * WAD);
         uint256 split = bound(uint256(rawSplit), 1e12, amount - 1e12);
         uint256 snapshot = vm.snapshotState();
         vm.prank(BOB);
@@ -483,11 +474,11 @@ contract InfRecoveryTest is Test {
         // Every rebound satisfies the old exit ratio and catches up to its floor.
         uint256 price = bound(uint256(rawPrice), 2_965, 4_000) * WAD;
         oracle.setPrice(price);
-        uint256 newMax = bound(uint256(rawMax), 3_002, reserve.debtRatioBps() - 1);
-        reserve.setDebtRatios(3_000, (3_000 + newMax) / 2, newMax);
+        uint256 newMax = bound(uint256(rawMax), 2, reserve.debtRatioBps() - 1);
+        reserve.setDebtRatios(newMax / 2, newMax);
         uint256 newPeriod = bound(uint256(rawPeriod), 1 hours, 30 days);
         reserve.setRecoveryHalvingPeriod(newPeriod);
-        uint256 amount = bound(uint256(rawAmount), 1e12, reserve.maxFundableUsd() * WAD / price);
+        uint256 amount = bound(uint256(rawAmount), 1e12, 5_000 * WAD);
         uint256 quote = reserve.previewFund(amount);
         uint256 floor = reserve.recoveryFloorPriceUsd();
         assertGt(floor, reserve.infPriceUsd());

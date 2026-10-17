@@ -21,7 +21,7 @@ contract InfWithdrawalTest is Test {
         vm.warp(10 days + 1 hours);
         collateral = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
-        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 6_450, 6_500, 10, 10);
         inf = reserve.inf();
 
         collateral.mint(ALICE, 2_000 * WAD);
@@ -53,7 +53,7 @@ contract InfWithdrawalTest is Test {
     }
 
     function _useLowSupplyReserve() internal {
-        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 5_500, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 5_500, 6_500, 10, 10);
         inf = reserve.inf();
         vm.startPrank(ALICE);
         collateral.approve(address(reserve), 2_000_000);

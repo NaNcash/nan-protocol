@@ -41,7 +41,7 @@ contract DeploySepolia is Script {
         oracle = new WstEthUsdOracle(
             IWstETH(address(collateral)), IAggregatorV3(address(feed)), fallbackOracle, 1 hours, 200
         );
-        reserve = new NaNReserve(collateral, oracle, controller, 3_000, 5_500, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, controller, 5_500, 6_500, 10, 10);
 
         // Bootstrap INF backing with free collateral so visitors can mint NaN immediately.
         collateral.faucet(100 ether);

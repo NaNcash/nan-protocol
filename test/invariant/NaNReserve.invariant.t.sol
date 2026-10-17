@@ -101,12 +101,11 @@ contract NaNReserveHandler is Test {
         _activeOracle().setPrice(3_000 * WAD);
     }
 
-    function setDebtRatios(uint16 rawMin, uint16 rawTarget, uint16 rawMax) external {
-        uint256 minBps = bound(uint256(rawMin), 1_000, 8_500);
-        uint256 targetBps = bound(uint256(rawTarget), minBps + 1, 9_500);
+    function setDebtRatios(uint16 rawTarget, uint16 rawMax) external {
+        uint256 targetBps = bound(uint256(rawTarget), 1, 9_998);
         uint256 maxBps = bound(uint256(rawMax), targetBps + 1, 9_999);
         (, uint256 initialPrice, uint256 halvingPeriod, uint256 exitDebtRatio) = reserve.recovery();
-        reserve.setDebtRatios(minBps, targetBps, maxBps);
+        reserve.setDebtRatios(targetBps, maxBps);
         if (initialPrice != 0) {
             (, uint256 currentPrice, uint256 currentPeriod, uint256 currentExitRatio) = reserve.recovery();
             assertEq(currentPrice, initialPrice);
@@ -176,7 +175,7 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         collateral = new MockERC20("Wrapped stETH", "wstETH");
         oracle = new MockOracle(3_000 * WAD);
         alternateOracle = new MockOracle(3_100 * WAD);
-        reserve = new NaNReserve(collateral, oracle, address(this), 5_000, 6_450, 6_500, 10, 10);
+        reserve = new NaNReserve(collateral, oracle, address(this), 6_450, 6_500, 10, 10);
         handler = new NaNReserveHandler(collateral, oracle, alternateOracle, reserve);
 
         collateral.mint(address(handler), 1_000_000 * WAD);
@@ -206,7 +205,7 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
     }
 
     function testGovernanceChangesInterleavedWithCrashRecapitalizationAndWithdrawal() public {
-        handler.setDebtRatios(5_000, 6_000, 7_000);
+        handler.setDebtRatios(6_000, 7_000);
         handler.setFees(100, 200);
         handler.setWithdrawalDelay(uint32(7 days));
         handler.setWithdrawalEpoch(uint32(6 hours));
@@ -326,8 +325,7 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
 
     function invariantGovernanceConfigurationStaysWithinBounds() public view {
         assertEq(reserve.owner(), address(handler));
-        assertGt(reserve.minDebtRatioBps(), 0);
-        assertLt(reserve.minDebtRatioBps(), reserve.targetDebtRatioBps());
+        assertGt(reserve.targetDebtRatioBps(), 0);
         assertLt(reserve.targetDebtRatioBps(), reserve.maxDebtRatioBps());
         assertLt(reserve.maxDebtRatioBps(), reserve.BPS());
         assertLe(reserve.mintFeeBps(), reserve.MAX_FEE_BPS());
