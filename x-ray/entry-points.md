@@ -13,7 +13,7 @@ Scope: non-view/non-pure callable functions on `NaNReserve`, `NaNToken`, and `IN
 
 ### Funding and senior issuance
 
-`[deployment]` → `wstETH.approve(reserve)` → `fund()` ◄── primary valid; minimum ratio when debt exists.
+`[deployment]` → `wstETH.approve(reserve)` → `fund()` ◄── primary valid; issuance price and precision checks.
 `[funding]` → `wstETH.approve(reserve)` → `mint()` ◄── INF supply positive; post-trade maximum ratio.
 `[minting or NaN transfer]` → `redeem()` ◄── caller owns NaN; primary or fallback valid.
 
@@ -44,7 +44,7 @@ Functions may impose balance, approval, request-ownership, timestamp, and numeri
 | Visibility | External, `nonReentrant`; `src/NaNReserve.sol:413` |
 | Caller | Collateral provider |
 | Parameters | `collateralIn`, `minInfOut`, `recipient` (user-controlled) |
-| Call chain | `collateralPriceUsd → WstEthUsdOracle.price`; `_checkFundingCap → _syncRecovery → _fundingQuote → _pullExact → wstETH.transferFrom`; `INFToken.mint` |
+| Call chain | `collateralPriceUsd → WstEthUsdOracle.price`; `_syncRecovery → _fundingQuote → _pullExact → wstETH.transferFrom`; `INFToken.mint` |
 | State modified | Recovery episode as needed; INF balances/total supply; collateral balances |
 | Value flow | Collateral caller → reserve; newly minted INF → recipient |
 | Reentrancy guard | Yes |
@@ -248,7 +248,7 @@ All are current-owner gated, without an embedded timelock, pause condition, or r
 | Contract | Function / source | Parameters | Call chain and state modified |
 |----------|-------------------|------------|-------------------------------|
 | NaNReserve | `setOracle`, `src/NaNReserve.sol:168` | `newOracle` (user-controlled) | `_setOracle → newOracle.price/redemptionPrice`; replaces `oracle` |
-| NaNReserve | `setDebtRatios`, `src/NaNReserve.sol:172` | `minBps`, `targetBps`, `maxBps` (user-controlled) | `_setDebtRatios`; three ordered ratio parameters |
+| NaNReserve | `setDebtRatios`, `src/NaNReserve.sol:172` | `targetBps`, `maxBps` (user-controlled) | `_setDebtRatios`; two ordered ratio parameters |
 | NaNReserve | `setFees`, `src/NaNReserve.sol:176` | `mintBps`, `redeemBps` (user-controlled) | `_setFees`; two fee parameters |
 | NaNReserve | `setRecoveryHalvingPeriod`, `src/NaNReserve.sol:181` | `newPeriod` (user-controlled) | Future `recoveryHalvingPeriod`; active episode unchanged |
 | NaNReserve | `setInfWithdrawalDelay`, `src/NaNReserve.sol:191` | `newDelay` (user-controlled) | Future `infWithdrawalDelay`; opened cohort maturity unchanged |

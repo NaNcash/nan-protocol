@@ -99,7 +99,7 @@ Senior collateralized mint/redeem dominates the architecture; INF adds share pri
 | Reserve authorizer / `owner()` | Trusted for price source and risk policy | Six immediate configuration entry points plus ownership nomination; no embedded timelock or multisig enforcement |
 | `pendingOwner()` | Bounded by current-owner nomination | May accept ownership immediately; two-step transfer supplies no time delay |
 | NaN holder / minter | Bounded by holdings, collateral receipt, slippage, and maximum band | Mint and redeem with arbitrary recipient; neither operation has an emergency pause |
-| INF holder / funder | Bounded by funding cap, holdings, cohort delay, and settlement capacity | Fund, escrow shares, and claim own request; queued shares retain dilution exposure |
+| INF holder / funder | Bounded by issuance pricing and precision, holdings, cohort delay, and settlement capacity | Fund, escrow shares, and claim own request; queued shares retain dilution exposure |
 | Recovery / settlement caller | Bounded by primary observation and cohort timestamps | Permissionlessly checkpoint, settle, or expire; cannot choose another holder's claim recipient |
 | Immutable reserve address in each token | Trusted supply authority | Sole caller allowed to mint/burn NaN and INF; users retain ordinary transfers and permit approvals |
 

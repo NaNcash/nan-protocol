@@ -1,8 +1,8 @@
 # Invariant Map
 
-> NaN Protocol | 58 guards | 25 inferred properties | 3 not enforced on-chain
+> NaN Protocol | 57 guards | 25 inferred properties | 3 not enforced on-chain
 
-Production scope only. Guards below reproduce source predicates with whitespace folded; duplicate token-constructor guards share G-38. Standard inherited ERC-20 semantics are resolved from the pinned OpenZeppelin implementation. **On-chain: No** records an unvalidated assumption or diagnostic policy property, not a confirmed vulnerability. Spec claims are labeled **(per spec)** and checked against the current code.
+Production scope only. G-31 was removed with the INF funding cap; remaining guard IDs are retained for reference. Guards below reproduce source predicates with whitespace folded; duplicate token-constructor guards share G-38. Standard inherited ERC-20 semantics are resolved from the pinned OpenZeppelin implementation. **On-chain: No** records an unvalidated assumption or diagnostic policy property, not a confirmed vulnerability. Spec claims are labeled **(per spec)** and checked against the current code.
 
 ## 1. Enforced Guards (Reference)
 
@@ -30,7 +30,7 @@ Per-call preconditions, not independently falsifiable global invariants. Generic
 `if (redemptionPrice == 0)` · `src/NaNReserve.sol:224` · Purpose: require a usable redemption quote at router selection time.
 
 #### G-8
-`if (minBps == 0 || minBps >= targetBps || targetBps >= maxBps || maxBps >= BPS)` · `src/NaNReserve.sol:231` · Purpose: preserve strict ordering and sub-100-percent risk parameters.
+`if (targetBps == 0 || targetBps >= maxBps || maxBps >= BPS)` · `src/NaNReserve.sol:231` · Purpose: preserve strict ordering and sub-100-percent risk parameters.
 
 #### G-9
 `if (mintBps > MAX_FEE_BPS || redeemBps > MAX_FEE_BPS)` · `src/NaNReserve.sol:241` · Purpose: cap fees retained from senior issuance and solvent redemption.
@@ -97,9 +97,6 @@ Per-call preconditions, not independently falsifiable global invariants. Generic
 
 #### G-30
 `if (!_withinDebtRatio(debt, _collateralToUsd(reserve - collateralOut, price), targetDebtRatioBps))` · `src/NaNReserve.sol:632` · Purpose: retain enough backing after junior settlement for the target debt ratio.
-
-#### G-31
-`if ( debt != 0 && _collateralToUsd(reserveCollateral() + collateralIn, price) > Math.mulDiv(debt, BPS, minDebtRatioBps) )` · `src/NaNReserve.sol:638` · Purpose: cap funding when debt exists so junior capital cannot exceed the minimum-ratio limit.
 
 #### G-32
 `if (infOut == 0 || infOut < minInfOut)` · `src/NaNReserve.sol:430` · Purpose: prevent zero or below-minimum junior issuance after NAV/floor pricing.
@@ -208,11 +205,11 @@ Per-call preconditions, not independently falsifiable global invariants. Generic
 
 `Bound` · On-chain: **Yes**
 
-> The stored parameters always satisfy `0 < minDebtRatioBps < targetDebtRatioBps < maxDebtRatioBps < 10_000`.
+> The stored parameters always satisfy `0 < targetDebtRatioBps < maxDebtRatioBps < 10_000`.
 
-**Derivation** — guard-lift: `if (minBps == 0 || minBps >= targetBps || targetBps >= maxBps || maxBps >= BPS)` (`NaNReserve.sol:231`) guards the sole assignments at 234–236. Constructor at 160 and setter at 172–173 both call this helper; declarations at 81–83 have no other post-construction writers. This constrains parameter ordering, not the live market ratio.
+**Derivation** — guard-lift: `if (targetBps == 0 || targetBps >= maxBps || maxBps >= BPS)` (`NaNReserve.sol:231`) guards the sole assignments to `targetDebtRatioBps` and `maxDebtRatioBps`. The constructor and `setDebtRatios` both call this helper; neither parameter has another writer. This constrains parameter ordering, not the live market ratio.
 
-**If violated** — Funding, withdrawal capacity, and recovery boundary arithmetic would lose their ordered policy inputs.
+**If violated** — Withdrawal capacity and recovery boundary arithmetic would lose their ordered policy inputs.
 
 #### I-4
 
