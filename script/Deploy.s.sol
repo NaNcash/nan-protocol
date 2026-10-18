@@ -10,6 +10,8 @@ import {WstEthUsdOracle, IWstETH, IAggregatorV3} from "../src/WstEthUsdOracle.so
 
 /// @notice Environment-configured deployment with a direct Chainlink feed and Uniswap v3 TWAP fallback.
 contract Deploy is Script {
+    error InvalidMaxStaleness();
+
     struct Config {
         uint256 deployerKey;
         address wstETH;
@@ -56,6 +58,7 @@ contract Deploy is Script {
 
         console2.log("WstEthUsdOracle", address(oracle));
         console2.log("Primary stETH/USD feed", config.stEthUsdFeed);
+        console2.log("Maximum primary price age (seconds)", config.maxStaleness);
         console2.log("UniswapV3TwapOracle", address(fallbackOracle));
         console2.log("NaNReserve", address(reserve));
         console2.log("NaNToken", address(reserve.nan()));
@@ -64,6 +67,10 @@ contract Deploy is Script {
     }
 
     function _readConfig() internal view returns (Config memory config) {
+        // Feed heartbeats vary by feed and chain. Require an explicitly reviewed age limit
+        // before broadcasting; see docs/oracle-freshness.md for the reference policy.
+        config.maxStaleness = vm.envUint("MAX_STALENESS");
+        if (config.maxStaleness == 0) revert InvalidMaxStaleness();
         config.deployerKey = vm.envUint("PRIVATE_KEY");
         config.wstETH = vm.envAddress("WSTETH");
         config.stEthUsdFeed = vm.envAddress("STETH_USD_FEED");
@@ -75,7 +82,6 @@ contract Deploy is Script {
         config.twapWindow = SafeCast.toUint32(vm.envUint("TWAP_WINDOW"));
         config.minWstEthWethLiquidity = SafeCast.toUint128(vm.envUint("MIN_WSTETH_WETH_HARMONIC_LIQUIDITY"));
         config.minWethUsdcLiquidity = SafeCast.toUint128(vm.envUint("MIN_WETH_USDC_HARMONIC_LIQUIDITY"));
-        config.maxStaleness = vm.envOr("MAX_STALENESS", uint256(1 hours));
         config.fallbackPremiumBps = vm.envOr("FALLBACK_PREMIUM_BPS", uint256(200));
         config.authorizer = vm.envAddress("AUTHORIZER");
         config.targetDebtRatioBps = vm.envOr("TARGET_DEBT_RATIO_BPS", uint256(5_500));
