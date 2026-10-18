@@ -52,6 +52,50 @@ contract WstEthUsdOracleTest is Test {
         assertEq(oracle.price(), 3_675 * WAD);
     }
 
+    function testAcceptsRoundAtFreshnessBoundary() public {
+        vm.warp(NOW + MAX_STALENESS);
+        assertEq(oracle.price(), 3_528 * WAD);
+        (uint256 redemptionPrice, bool fallbackUsed) = oracle.redemptionPrice();
+        assertEq(redemptionPrice, 3_528 * WAD);
+        assertFalse(fallbackUsed);
+    }
+
+    function testRejectsRoundOneSecondPastFreshnessBoundary() public {
+        vm.warp(NOW + MAX_STALENESS + 1);
+        vm.expectRevert(WstEthUsdOracle.StalePrice.selector);
+        oracle.price();
+    }
+
+    function testFuzzConfiguredFreshnessBoundary(uint32 rawMaxAge) public {
+        uint256 maxAge = bound(rawMaxAge, 1, 7 days);
+        WstEthUsdOracle configured = new WstEthUsdOracle(
+            IWstETH(address(wstETH)), IAggregatorV3(address(stEthUsd)), fallbackOracle, maxAge, 200
+        );
+        vm.warp(NOW + maxAge);
+        assertEq(configured.price(), 3_528 * WAD);
+        vm.warp(NOW + maxAge + 1);
+        vm.expectRevert(WstEthUsdOracle.StalePrice.selector);
+        configured.price();
+    }
+
+    function testNegativePrimaryAnswerIsRejected() public {
+        stEthUsd.setRoundData(2, -1, NOW, 2);
+        vm.expectRevert(WstEthUsdOracle.InvalidPrice.selector);
+        oracle.price();
+    }
+
+    function testZeroPrimaryTimestampIsRejected() public {
+        stEthUsd.setRoundData(2, 2_940e8, 0, 2);
+        vm.expectRevert(WstEthUsdOracle.InvalidPrice.selector);
+        oracle.price();
+    }
+
+    function testZeroPrimaryRoundIsRejected() public {
+        stEthUsd.setRoundData(0, 2_940e8, NOW, 0);
+        vm.expectRevert(WstEthUsdOracle.InvalidRound.selector);
+        oracle.price();
+    }
+
     function testStalePrimaryUsesPremiumFallbackForRedemptionOnly() public {
         stEthUsd.setRoundData(2, 2_940e8, NOW - MAX_STALENESS - 1, 2);
         vm.expectRevert(WstEthUsdOracle.StalePrice.selector);
