@@ -40,7 +40,7 @@ contract RedemptionFeeTest is Test {
 
     function _donate(uint256 amount) internal {
         vm.prank(ALICE);
-        collateral.transfer(address(reserve), amount);
+        assertTrue(collateral.transfer(address(reserve), amount));
     }
 
     function _redeem(uint256 amount, uint256 expectedOut, uint256 expectedFee) internal returns (uint256 out) {
@@ -79,7 +79,7 @@ contract RedemptionFeeTest is Test {
                     reserve.setFees(0, fees[i]);
                     if (offset < 0) {
                         vm.prank(address(reserve));
-                        collateral.transfer(ALICE, 1);
+                        assertTrue(collateral.transfer(ALICE, 1));
                     } else if (offset > 0) {
                         _donate(1);
                     }

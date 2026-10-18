@@ -499,16 +499,12 @@ function bindActions() {
   onForm('redeem-form', 'NaN redemption', async form => {
     await ensureWallet()
     const nanIn = formValue(form, 'amount')
-    const [[price], debt, reserveCollateral, fee] = await Promise.all([
-      reserveRead('redemptionCollateralPriceUsd'), reserveRead('debtUsd'),
-      reserveRead('reserveCollateral'), reserveRead('redeemFeeBps'),
-    ])
-    // Value only unreserved collateral with the router's actual redemption quote.
-    const backing = reserveCollateral * price / WAD
-    const redemptionPrice = backing < debt ? backing * WAD / debt : WAD
-    const gross = nanIn * redemptionPrice / WAD
-    const net = backing > debt ? gross * (10_000n - fee) / 10_000n : gross
-    const estimatedCollateral = net * WAD / price
+    // Simulate the deployed reserve so fees, rounding, and the final insolvent
+    // sweep match its actual rules, including for older immutable deployments.
+    const { result: estimatedCollateral } = await publicClient.simulateContract({
+      address: deployment.reserve, abi: reserveAbi, functionName: 'redeem',
+      args: [nanIn, 0n, account], account,
+    })
     await reserveWrite('redeem', [nanIn, estimatedCollateral * 99n / 100n, account])
   })
   onForm('request-form', 'Withdrawal request', async form => {
