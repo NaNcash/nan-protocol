@@ -168,6 +168,8 @@ On Ethereum mainnet, candidate pools are [wstETH/WETH 0.01%](https://www.geckote
 
 `FALLBACK_PREMIUM_BPS` increases the legacy diagnostic quote. It is not a guarantee against manipulated pool prices or a USDC depeg and cannot authorize a reserve payout. Check both source quotes and staleness limits against target-network conditions before deployment.
 
+`MAX_STALENESS` is required, must be nonzero, and has no default. Follow the [primary oracle freshness policy](docs/oracle-freshness.md) to verify the exact feed's heartbeat and choose a bounded publication margin. The documented Ethereum mainnet stETH/USD reference has a verified one-hour heartbeat and a 75-minute reference age limit; the sample leaves this value blank so another chain or feed cannot silently inherit it. Existing routers have immutable limits and require a new router plus an authorized `setOracle` call to change them.
+
 Review every address and parameter independently, then simulate before broadcasting:
 
 ```bash
