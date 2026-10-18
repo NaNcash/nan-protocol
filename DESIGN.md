@@ -62,7 +62,21 @@ The queue uses the asynchronous request/claim pattern but is not ERC-7540 compli
 
 ### Redeem
 
-When `R > D`, NaN redeems at $1 less the redemption fee. The retained fee increases INF NAV and redemption improves the collateral ratio.
+When `R > D`, NaN redeems at $1 less an equity-bounded redemption fee. For a burn of `X` NaN, define `E = R - D` using pre-redemption backing (excluding earmarked withdrawal collateral). In 18-decimal USD units:
+
+```text
+configuredFee = floor(X * redeemFeeBps / 10_000)
+equityCap     = floor(X * E / D)
+feeUsd        = min(configuredFee, equityCap)
+netUsdOut     = X - feeUsd
+collateralOut = floor(netUsdOut * 1e18 / collateralPriceUsd)
+```
+
+Thus the effective fee rate ramps from zero at equality to the configured rate when `E / D` reaches `redeemFeeBps / 10_000`, apart from integer rounding. A tiny collateral donation can increase a given redemption's equity cap only by its proportional share of the additional USD backing, with base-unit rounding. At $100,000 debt, a $2,000 collateral price, and a 10 bp fee, donating one collateral wei at equality increases equity by 2,000 USD base units. A 10,000 NaN redemption retains 200 USD base units rather than the full $10 fee, changing collateral output by one wei.
+
+The retained fee increases INF equity; collateral conversion dust also remains in backing. Neither the cap nor the fee spends existing junior equity. The full configured fee remains available in adequately capitalized reserves, and solvent redemption improves the collateral ratio. A full solvent redemption leaves the original equity plus its fee and conversion dust for INF.
+
+**Split redemptions recompute the cap from current equity and remaining debt.** The cap is proportional to the burned share of debt; using the entire equity balance as each transaction's cap would let repeated small burns each charge the whole surplus. Retained fees and conversion dust increase equity, while each burn decreases debt, so later burns can pay a higher rate. Splitting is not fee-invariant and can cost more than a single burn; it cannot increase aggregate solvent output except for base-unit fee rounding. For example, at $100,000 debt and $10 equity with a 10 bp configured fee, a full burn pays $10. Two $50,000 burns pay $5 then $15, leaving $30 equity instead of $20. Across any sequence, each tranche's fee is still bounded by its configured fee and its then-current proportional equity cap. This policy deliberately retains earned fees in junior equity rather than tracking a historical fee-free equity balance. Integrators should quote the intended transaction and retain minimum-output protection. This path dependence and its incentives remain part of the prototype's required independent economic review.
 
 When `R <= D`, the explicit fee is disabled and the gross redemption price is:
 

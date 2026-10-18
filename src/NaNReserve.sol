@@ -563,7 +563,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Burn NaN and redeem wstETH.
-    /// @dev Solvent systems redeem at $1 minus fee. Insolvent systems redeem pro-rata with no fee,
+    /// @dev Solvent fees are capped by the redeemed fraction of pre-redemption equity.
+    ///      Insolvent systems redeem pro-rata with no fee,
     ///      preventing early redeemers from draining more than their share of the remaining reserve.
     function redeem(uint256 nanIn, uint256 minCollateralOut, address recipient)
         external
@@ -582,8 +583,15 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 redemptionPrice = reserveBefore >= debtBefore ? WAD : Math.mulDiv(reserveBefore, WAD, debtBefore);
         uint256 grossUsdOut = Math.mulDiv(nanIn, redemptionPrice, WAD);
 
-        uint256 feeBps = reserveBefore > debtBefore ? redeemFeeBps : 0;
-        uint256 feeUsd = Math.mulDiv(grossUsdOut, feeBps, BPS);
+        uint256 feeUsd;
+        if (reserveBefore > debtBefore) {
+            // A dust surplus must not activate the full fee on the entire redemption.
+            // Apply the cap to this redemption's share of equity, so smaller burns
+            // cannot each charge the whole surplus. Both amounts round down in USD.
+            feeUsd = Math.min(
+                Math.mulDiv(grossUsdOut, redeemFeeBps, BPS), Math.mulDiv(nanIn, reserveBefore - debtBefore, debtBefore)
+            );
+        }
         uint256 netUsdOut = grossUsdOut - feeUsd;
         collateralOut = reserveBefore <= debtBefore && nanIn == debtBefore
             ? reserveCollateral()

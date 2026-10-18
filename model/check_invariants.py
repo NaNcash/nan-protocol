@@ -37,7 +37,8 @@ for _ in range(100_000):
     reserve=random.uniform(1,1e9)
     debt=random.uniform(1,min(reserve,1e9))
     burn=random.uniform(0,debt)
-    net=burn*(1-REDEEM_FEE/BPS)
+    fee=min(burn*REDEEM_FEE/BPS, burn*(reserve-debt)/debt)
+    net=burn-fee
     r2=reserve-net
     d2=debt-burn
     if d2 and d2/r2 > debt/reserve + 1e-12:
@@ -55,11 +56,40 @@ for _ in range(100_000):
     if abs((r2/d2)-(reserve/debt)) > 1e-9:
         raise AssertionError('pro-rata invariant')
 
-# Same-token funding: integer arithmetic mirrors Solidity rounding. Splitting
-# at the same price/time must not increase issuance, including across target.
 WAD = 10**18
 
 
+def redemption_fee(amount, reserve, debt, fee_bps):
+    if reserve <= debt:
+        return 0
+    return min(amount * fee_bps // BPS, amount * (reserve - debt) // debt)
+
+
+# Integer USD accounting: fees are proportional to surplus and bounded by the
+# configured rate. Splitting recomputes the cap; retaining the first fee must
+# not make the second burn cheaper (allow one USD base unit for fee flooring).
+for _ in range(100_000):
+    debt = random.randrange(2, 10**9 * WAD)
+    equity = random.randrange(0, debt)
+    reserve = debt + equity
+    amount = random.randrange(2, debt + 1)
+    first = random.randrange(1, amount)
+    fee_bps = random.randrange(0, 1_001)
+    fee = redemption_fee(amount, reserve, debt, fee_bps)
+    assert 0 <= fee <= amount * fee_bps // BPS
+    assert fee <= amount * equity // debt
+    assert redemption_fee(amount, debt, debt, fee_bps) == 0
+    donation = random.randrange(1, 10**6 * WAD)
+    after_donation = redemption_fee(amount, reserve + donation, debt, fee_bps)
+    assert 0 <= after_donation - fee <= (amount * donation + debt - 1) // debt
+    first_fee = redemption_fee(first, reserve, debt, fee_bps)
+    second_fee = redemption_fee(amount - first, reserve - first + first_fee, debt - first, fee_bps)
+    assert first_fee + second_fee >= fee - 1
+    assert first_fee + second_fee <= amount * fee_bps // BPS
+
+
+# Same-token funding: integer arithmetic mirrors Solidity rounding. Splitting
+# at the same price/time must not increase issuance, including across target.
 def funding_quote(deposit, reserve, debt, supply, floor_price):
     if supply == 0:
         assert debt == 0
