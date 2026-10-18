@@ -449,7 +449,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
-    /// @dev Partial fills accumulate without finalizing; claims open on full fill or expiry.
+    /// @dev Partial fills remain retryable unless only precision/rounding dust remains after a payout.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -461,16 +461,17 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
         uint256 filledInf;
         uint256 collateralOut;
+        uint256 price;
         if (address(requestEpoch.token) == address(inf)) {
-            (filledInf, collateralOut) = _withdrawalQuote(requestEpoch.requestedInf - requestEpoch.filledInf);
+            (filledInf, collateralOut, price) = _withdrawalQuote(requestEpoch.requestedInf - requestEpoch.filledInf);
         }
         if (filledInf == 0 || collateralOut == 0) revert NoWithdrawalCapacity();
 
         requestEpoch.filledInf += filledInf;
         requestEpoch.collateralOut += collateralOut;
-        requestEpoch.settled = requestEpoch.filledInf == requestEpoch.requestedInf;
         requestEpoch.token.burn(address(this), filledInf);
         claimableWithdrawalCollateral += collateralOut;
+        requestEpoch.settled = _withdrawalRemainderIsDust(requestEpoch.requestedInf - requestEpoch.filledInf, price);
 
         if (requestEpoch.settled) {
             emit WithdrawalSettled(series, epoch, requestEpoch.filledInf, requestEpoch.collateralOut);
@@ -601,7 +602,10 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     // Internal math
     // -------------------------------------------------------------------------
 
-    function _withdrawalQuote(uint256 requestedInf) internal returns (uint256 filledInf, uint256 collateralOut) {
+    function _withdrawalQuote(uint256 requestedInf)
+        internal
+        returns (uint256 filledInf, uint256 collateralOut, uint256 price)
+    {
         uint256 supply = inf.totalSupply(); // Includes INF locked by all unsettled cohorts.
         uint256 reserve = reserveCollateral();
         uint256 debt = debtUsd();
@@ -609,19 +613,19 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         if (debt == 0) {
             filledInf = _precisionSafeBurn(requestedInf, supply);
             collateralOut = filledInf == supply ? reserve : Math.mulDiv(filledInf, reserve, supply);
-            if (collateralOut == 0) return (0, 0);
-            return (filledInf, collateralOut);
+            if (collateralOut == 0) return (0, 0, 0);
+            return (filledInf, collateralOut, 0);
         }
 
-        uint256 price = collateralPriceUsd();
+        price = collateralPriceUsd();
         uint256 reserveValue = _collateralToUsd(reserve, price);
         _syncRecovery(reserveValue, debt, supply);
-        if (reserveValue <= debt) return (0, 0);
+        if (reserveValue <= debt) return (0, 0, price);
 
         uint256 minimumReserveUsd = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
-        if (reserveValue <= minimumReserveUsd) return (0, 0);
+        if (reserveValue <= minimumReserveUsd) return (0, 0, price);
         uint256 minimumReserveCollateral = Math.mulDiv(minimumReserveUsd, WAD, price, Math.Rounding.Ceil);
-        if (reserve <= minimumReserveCollateral) return (0, 0);
+        if (reserve <= minimumReserveCollateral) return (0, 0, price);
 
         uint256 availableCollateral = reserve - minimumReserveCollateral;
         uint256 equity = reserveValue - debt;
@@ -629,11 +633,27 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         filledInf = Math.min(requestedInf, Math.mulDiv(maximumUsdOut, supply, equity));
         filledInf = _precisionSafeBurn(filledInf, supply);
         collateralOut = _usdToCollateral(Math.mulDiv(filledInf, equity, supply), price);
-        if (collateralOut == 0) return (0, 0);
+        if (collateralOut == 0) return (0, 0, price);
 
         if (!_withinDebtRatio(debt, _collateralToUsd(reserve - collateralOut, price), targetDebtRatioBps)) {
             revert DebtRatioTooHigh();
         }
+    }
+
+    /// @dev Called only after a nonzero payout, using the updated backing/supply and the fill's price.
+    ///      Ignore target-ratio capacity: ordinary partial fills must remain eligible for retries.
+    function _withdrawalRemainderIsDust(uint256 remainingInf, uint256 price) internal view returns (bool) {
+        if (remainingInf == 0) return true;
+        uint256 supply = inf.totalSupply();
+        uint256 burnableInf = _precisionSafeBurn(remainingInf, supply);
+        if (burnableInf == 0) return true;
+
+        uint256 reserve = reserveCollateral();
+        uint256 debt = debtUsd();
+        if (debt == 0) return Math.mulDiv(burnableInf, reserve, supply) == 0;
+
+        uint256 equity = _collateralToUsd(reserve, price) - debt;
+        return _usdToCollateral(Math.mulDiv(burnableInf, equity, supply), price) == 0;
     }
 
     /// @dev Allow a complete exit, but never leave an outstanding supply below the precision floor.

@@ -84,6 +84,39 @@ contract WithdrawalRemainderTest is Test {
         assertGt(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
     }
 
+    function testRemainderWorthOneCollateralUnitRemainsRetryable() public {
+        reserve.mint(50e18, 0, address(this));
+        uint256 supply = reserve.inf().totalSupply();
+        uint256 minimumUsd = Math.mulDiv(reserve.debtUsd(), 10_000, 5_500, Math.Rounding.Ceil);
+        uint256 minimumCollateral = Math.mulDiv(minimumUsd, 1e18, 3_000e18, Math.Rounding.Ceil);
+        uint256 availableUsd = (reserve.reserveCollateral() - minimumCollateral) * 3_000;
+        uint256 fill = Math.mulDiv(availableUsd, supply, reserve.reserveUsd() - reserve.debtUsd());
+        (uint256 series, uint256 epoch) = _request(fill + 3_000);
+        vm.warp(reserve.withdrawalMaturity(series, epoch));
+        reserve.settleDefundEpoch(series, epoch);
+        (,, uint256 filled, uint256 payout, bool settled,) = reserve.withdrawalEpochs(series, epoch);
+        assertEq(filled, fill);
+        assertFalse(settled);
+        uint256 equity = reserve.reserveUsd() - reserve.debtUsd();
+        assertEq(Math.mulDiv(3_000, equity, reserve.inf().totalSupply()) / 3_000, 1);
+        vm.expectRevert(NaNReserve.WithdrawalNotSettled.selector);
+        reserve.claimDefund(series, epoch, 0, address(this));
+        vm.expectRevert(NaNReserve.NoWithdrawalCapacity.selector);
+        reserve.settleDefundEpoch(series, epoch);
+        assertEq(reserve.claimableWithdrawalCollateral(), payout);
+
+        // Even a one-unit payout must retain the opportunity to fill after a rebound.
+        oracle.setPrice(4_000e18);
+        reserve.settleDefundEpoch(series, epoch);
+        (,, filled,, settled,) = reserve.withdrawalEpochs(series, epoch);
+        assertTrue(settled);
+        assertEq(filled, fill + 3_000);
+        (, uint256 refund) = reserve.claimDefund(series, epoch, payout, address(this));
+        assertEq(refund, 0);
+        assertEq(block.timestamp, reserve.withdrawalMaturity(series, epoch));
+        assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
+    }
+
     function _settleAndClaimTwo(uint256 requested, uint256 split, bool reverse, bool withDebt) internal {
         Snapshot memory snapshot;
         snapshot.supply = reserve.inf().totalSupply();
