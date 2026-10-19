@@ -22,8 +22,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     uint256 public constant WAD = 1e18;
     uint256 public constant BPS = 10_000;
-    /// @notice Minimum nonzero INF supply and minimum funding output, in INF base units.
+    /// @notice Minimum INF supply for NaN minting and minimum funding output, in INF base units.
     /// @dev A successful deposit loses less than one billionth of its exact share quote to rounding.
+    ///      Withdrawals may leave less supply; funding restores the operating minimum before new NaN issuance.
     uint256 public constant MIN_INF_SUPPLY = 1e9;
     uint256 public constant MAX_FEE_BPS = 1_000;
     uint256 public constant MIN_INF_WITHDRAWAL_DELAY = 1 days;
@@ -449,7 +450,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
-    /// @dev Partial fills remain retryable unless only precision/rounding dust remains after a payout.
+    /// @dev Partial fills remain retryable unless only collateral-rounding dust remains after a payout.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -540,7 +541,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     {
         if (collateralIn == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
-        if (inf.totalSupply() == 0) revert NoJuniorCapital();
+        if (inf.totalSupply() < MIN_INF_SUPPLY) revert NoJuniorCapital();
 
         uint256 price = collateralPriceUsd();
         uint256 reserveBefore = _collateralToUsd(reserveCollateral(), price);
@@ -619,7 +620,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 debt = debtUsd();
 
         if (debt == 0) {
-            filledInf = _precisionSafeBurn(requestedInf, supply);
+            // Let fragmented holders finish independently, including below the
+            // operating minimum. _fundingQuote still rejects all coarse issuance.
+            filledInf = requestedInf;
             collateralOut = filledInf == supply ? reserve : Math.mulDiv(filledInf, reserve, supply);
             if (collateralOut == 0) return (0, 0, 0);
             return (filledInf, collateralOut, 0);
@@ -639,7 +642,6 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         uint256 equity = reserveValue - debt;
         uint256 maximumUsdOut = _collateralToUsd(availableCollateral, price);
         filledInf = Math.min(requestedInf, Math.mulDiv(maximumUsdOut, supply, equity));
-        filledInf = _precisionSafeBurn(filledInf, supply);
         collateralOut = _usdToCollateral(Math.mulDiv(filledInf, equity, supply), price);
         if (collateralOut == 0) return (0, 0, price);
 
@@ -653,21 +655,13 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     function _withdrawalRemainderIsDust(uint256 remainingInf, uint256 price) internal view returns (bool) {
         if (remainingInf == 0) return true;
         uint256 supply = inf.totalSupply();
-        uint256 burnableInf = _precisionSafeBurn(remainingInf, supply);
-        if (burnableInf == 0) return true;
 
         uint256 reserve = reserveCollateral();
         uint256 debt = debtUsd();
-        if (debt == 0) return Math.mulDiv(burnableInf, reserve, supply) == 0;
+        if (debt == 0) return Math.mulDiv(remainingInf, reserve, supply) == 0;
 
         uint256 equity = _collateralToUsd(reserve, price) - debt;
-        return _usdToCollateral(Math.mulDiv(burnableInf, equity, supply), price) == 0;
-    }
-
-    /// @dev Allow a complete exit, but never leave an outstanding supply below the precision floor.
-    function _precisionSafeBurn(uint256 amount, uint256 supply) internal pure returns (uint256) {
-        if (amount == supply) return amount;
-        return Math.min(amount, supply - MIN_INF_SUPPLY);
+        return _usdToCollateral(Math.mulDiv(remainingInf, equity, supply), price) == 0;
     }
 
     function _fundingQuote(uint256 usdIn, uint256 reserve, uint256 debt, uint256 supply, uint256 floor)
@@ -687,6 +681,9 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
                 infOut = Math.mulDiv(usdIn, supply, equity);
             }
         }
+        // This output bound applies even with one residual INF base unit: a
+        // donation cannot induce a successful coarse deposit, and each fund
+        // restores total supply above the operating minimum atomically.
         if (infOut < MIN_INF_SUPPLY) revert InsufficientInfPrecision();
     }
 

@@ -31,7 +31,7 @@ contract InfPrecisionTest is Test {
         assertEq(reserve.inf().totalSupply(), 0);
     }
 
-    function testNearDrainKeepsMinimumSupplyAndCompleteExitCanRestart() public {
+    function testNearDrainCanExitBelowOperatingMinimumAndRestart() public {
         uint256 supply = reserve.fund(1_000_000, 0, address(this));
         (uint256 series, uint256 epoch) = reserve.requestDefund(supply - 1);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
@@ -42,10 +42,10 @@ contract InfPrecisionTest is Test {
             reserve.expireDefundEpoch(series, epoch);
         }
         reserve.claimDefund(series, epoch, 0, address(this));
-        assertEq(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
-        assertEq(reserve.inf().balanceOf(address(this)), reserve.MIN_INF_SUPPLY());
+        assertEq(reserve.inf().totalSupply(), 1);
+        assertEq(reserve.inf().balanceOf(address(this)), 1);
 
-        (series, epoch) = reserve.requestDefund(reserve.MIN_INF_SUPPLY());
+        (series, epoch) = reserve.requestDefund(1);
         vm.warp(reserve.withdrawalMaturity(series, epoch));
         reserve.settleDefundEpoch(series, epoch);
         reserve.claimDefund(series, epoch, 0, address(this));

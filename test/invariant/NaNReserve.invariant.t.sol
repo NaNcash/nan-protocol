@@ -51,6 +51,8 @@ contract NaNReserveHandler is Test {
             assertEq(reserve.debtUsd(), debtBefore);
             assertGe(reserve.reserveUsd(), reserveBefore);
             assertEq(reserve.inf().totalSupply(), supplyBefore + issued);
+            assertGe(issued, reserve.MIN_INF_SUPPLY());
+            assertGe(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
         } catch {}
     }
 
@@ -294,9 +296,16 @@ contract NaNReserveInvariantTest is StdInvariant, Test {
         if (reserve.debtUsd() != 0) assertGt(reserve.inf().totalSupply(), 0);
     }
 
-    function invariantInfSupplyNeverFallsBelowPrecisionFloor() public view {
-        uint256 supply = reserve.inf().totalSupply();
-        if (supply != 0) assertGe(supply, reserve.MIN_INF_SUPPLY());
+    function invariantFundingQuotesRespectMinimumPrecision() public view {
+        try reserve.previewFund(1e12) returns (uint256 quote) {
+            assertGe(quote, reserve.MIN_INF_SUPPLY());
+        } catch {}
+    }
+
+    function invariantSubminimumSupplyCannotMintNan() public {
+        if (reserve.inf().totalSupply() >= reserve.MIN_INF_SUPPLY()) return;
+        vm.expectRevert(NaNReserve.NoJuniorCapital.selector);
+        reserve.mint(1, 0, address(this));
     }
 
     function invariantWithdrawalEscrowsMatchUnclaimedCohorts() public view {

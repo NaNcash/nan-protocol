@@ -46,28 +46,30 @@ contract WithdrawalRemainderTest is Test {
         // Debt-free settlement and claims remain independent of the primary oracle.
         oracle.setPrice(0);
         vm.expectEmit(true, true, false, true, address(reserve));
-        emit NaNReserve.WithdrawalSettled(series, epoch, supply - 1e9, 49_999_999_999_999_666_666);
+        emit NaNReserve.WithdrawalSettled(series, epoch, supply - 1, 50e18 - 1);
         reserve.settleDefundEpoch(series, epoch);
         (,, uint256 filled, uint256 payout, bool settled,) = reserve.withdrawalEpochs(series, epoch);
         assertTrue(settled);
-        assertEq(filled, supply - reserve.MIN_INF_SUPPLY());
-        assertEq(payout, 49_999_999_999_999_666_666);
+        assertEq(filled, supply - 1);
+        assertEq(payout, 50e18 - 1);
         assertEq(reserve.claimableWithdrawalCollateral(), payout);
         assertEq(reserve.reserveCollateral(), 50e18 - payout);
         (uint256 out, uint256 refund) = reserve.claimDefund(series, epoch, payout, address(this));
         assertEq(out, payout);
-        assertEq(refund, 999_999_999);
+        assertEq(refund, 0);
         assertEq(block.timestamp, maturity);
-        assertEq(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
+        assertEq(reserve.inf().totalSupply(), 1);
         assertEq(reserve.inf().balanceOf(SECOND), 1);
         assertEq(reserve.claimableWithdrawalCollateral(), 0);
     }
 
-    function testFuzzPrecisionRemainderClaimsConserveTotals(uint96 rawSplit, bool reverse, bool withDebt) public {
+    function testFuzzNearDrainClaimsConserveTotals(uint96 rawSplit, bool reverse, bool withDebt) public {
         if (withDebt) reserve.mint(1, 0, address(this));
         uint256 supply = reserve.inf().totalSupply();
-        _settleAndClaimTwo(supply - 1, bound(uint256(rawSplit), 1, supply - 2), reverse, withDebt);
-        assertEq(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
+        _settleAndClaimTwo(supply - 1, bound(uint256(rawSplit), 1, supply - 2), reverse, withDebt, !withDebt);
+        assertGt(reserve.inf().totalSupply(), 0);
+        assertLt(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
+        if (!withDebt) assertEq(reserve.inf().totalSupply(), 1);
     }
 
     function testFuzzZeroCollateralRemainderClaimsConserveTotals(uint96 rawSplit, bool reverse) public {
@@ -79,7 +81,7 @@ contract WithdrawalRemainderTest is Test {
         uint256 fill = Math.mulDiv(availableUsd, supply, reserve.reserveUsd() - reserve.debtUsd());
         // The extra base unit cannot buy even one collateral base unit at NAV.
         uint256 requested = fill + 1;
-        _settleAndClaimTwo(requested, bound(uint256(rawSplit), 1, requested - 1), reverse, true);
+        _settleAndClaimTwo(requested, bound(uint256(rawSplit), 1, requested - 1), reverse, true, true);
         assertEq(reserve.inf().totalSupply(), supply - fill);
         assertGt(reserve.inf().totalSupply(), reserve.MIN_INF_SUPPLY());
     }
@@ -117,7 +119,9 @@ contract WithdrawalRemainderTest is Test {
         assertLe(reserve.debtRatioBps(), reserve.targetDebtRatioBps());
     }
 
-    function _settleAndClaimTwo(uint256 requested, uint256 split, bool reverse, bool withDebt) internal {
+    function _settleAndClaimTwo(uint256 requested, uint256 split, bool reverse, bool withDebt, bool expectSettled)
+        internal
+    {
         Snapshot memory snapshot;
         snapshot.supply = reserve.inf().totalSupply();
         assertTrue(reserve.inf().transfer(SECOND, split));
@@ -140,9 +144,9 @@ contract WithdrawalRemainderTest is Test {
         }
         reserve.settleDefundEpoch(series, epoch);
         (,, uint256 filled, uint256 payout, bool settled,) = reserve.withdrawalEpochs(series, epoch);
-        assertTrue(settled);
+        assertEq(settled, expectSettled);
         assertGt(filled, 0);
-        assertLt(filled, requested);
+        assertLe(filled, requested);
         assertGt(payout, 0);
         assertEq(reserve.claimableWithdrawalCollateral(), payout);
         assertEq(reserve.inf().totalSupply() + filled, snapshot.supply);
@@ -150,6 +154,12 @@ contract WithdrawalRemainderTest is Test {
         snapshot.backing = reserve.reserveCollateral();
         snapshot.debt = reserve.debtUsd();
         oracle.setPrice(0);
+        if (!settled) {
+            // A meaningful remainder remains retryable; capacity exhaustion alone
+            // must not consume its maturity. Expiry opens its partial claim.
+            vm.warp(snapshot.expiry);
+            reserve.expireDefundEpoch(series, epoch);
+        }
         uint256 totalOut;
         uint256 totalRefund;
         for (uint256 i; i < 2; ++i) {
@@ -172,7 +182,7 @@ contract WithdrawalRemainderTest is Test {
         assertEq(reserve.debtUsd(), snapshot.debt);
         assertEq(reserve.withdrawalMaturity(series, epoch), snapshot.maturity);
         assertEq(reserve.withdrawalExpiry(series, epoch), snapshot.expiry);
-        assertEq(block.timestamp, snapshot.maturity);
+        assertEq(block.timestamp, expectSettled ? snapshot.maturity : snapshot.expiry);
         vm.expectRevert(NaNReserve.WithdrawalAlreadySettled.selector);
         reserve.settleDefundEpoch(series, epoch);
         vm.warp(snapshot.expiry);

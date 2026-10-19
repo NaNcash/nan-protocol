@@ -57,6 +57,7 @@ for _ in range(100_000):
         raise AssertionError('pro-rata invariant')
 
 WAD = 10**18
+MIN_INF_SUPPLY = 10**9
 
 
 def redemption_fee(amount, reserve, debt, fee_bps):
@@ -146,7 +147,32 @@ for _ in range(100_000):
     if bootstrap != deposit or funding_quote(deposit, deposit, 0, bootstrap, 0) != deposit:
         raise AssertionError('debt-free funding price changed')
 
-# The floor must remain positive and nonincreasing, including very long gaps.
+# Low-supply exits require no share coordination: independent debt-free burns
+# conserve collateral, including the final sweep. The funding output bound,
+# rather than a burn floor, protects deposits even with one existing share.
+for _ in range(100_000):
+    supply = random.randrange(2, MIN_INF_SUPPLY + 1)
+    backing = random.randrange(supply, 10**6 * WAD)
+    split = random.randrange(1, supply)
+    first_out = split * backing // supply
+    remaining_backing = backing - first_out
+    remaining_supply = supply - split
+    assert first_out > 0
+    assert remaining_supply > 0
+    final_out = remaining_backing
+    assert first_out + final_out == backing
+    deposit = random.randrange(1, 10**6 * WAD)
+    minted = deposit * remaining_supply // remaining_backing
+    if minted >= MIN_INF_SUPPLY:
+        total_supply = remaining_supply + minted
+        claim = minted * (remaining_backing + deposit) // total_supply
+        max_loss = (deposit + MIN_INF_SUPPLY - 1) // MIN_INF_SUPPLY + 1
+        assert deposit - claim <= max_loss
+        assert total_supply >= MIN_INF_SUPPLY
+    # Rejected coarse deposits make no reserve/supply transition.
+
+
+# The recovery floor must remain positive and nonincreasing, including very long gaps.
 def decayed_floor(initial, elapsed, period):
     n, remainder = divmod(elapsed, period)
     if n >= 256:
