@@ -56,11 +56,13 @@ contract WstEthUsdOracle is IReserveOracle {
 
         uint8 feedDecimals = stEthUsdFeed_.decimals();
         if (feedDecimals > 18) revert UnsupportedFeedDecimals();
-        try fallbackOracle_.price() returns (uint256 fallbackPrice) {
-            if (fallbackPrice == 0) revert FallbackUnavailable();
-        } catch {
-            revert FallbackUnavailable();
-        }
+        // Diagnostics may be temporarily unavailable (including a zero quote).
+        // Check the ABI when the call succeeds, without requiring quote liveness.
+        // A reverting source cannot prove its interface here; deployment tooling
+        // must still validate its implementation and immutable configuration.
+        (bool success, bytes memory result) =
+            address(fallbackOracle_).staticcall(abi.encodeCall(IPriceOracle.price, ()));
+        if (success && result.length != 32) revert FallbackUnavailable();
 
         wstETH = wstETH_;
         stEthUsdFeed = stEthUsdFeed_;
@@ -81,7 +83,8 @@ contract WstEthUsdOracle is IReserveOracle {
     }
 
     /// @notice Legacy diagnostic quote: primary when valid, otherwise a premium-adjusted fallback.
-    /// @dev NaNReserve does not use this fallback to authorize redemption.
+    /// @dev NaNReserve does not use this fallback to authorize redemption. If both sources
+    ///      are unavailable (including a zero fallback quote), reverts with FallbackUnavailable.
     function redemptionPrice() external view returns (uint256 collateralPrice, bool fallbackUsed) {
         try this.price() returns (uint256 primaryPrice) {
             return (primaryPrice, false);

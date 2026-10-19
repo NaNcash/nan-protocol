@@ -192,6 +192,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Change the delay for future cohorts only; requests already in a cohort are unaffected.
+    /// @dev Reducing the delay can make a later cohort mature first; there is no FIFO priority.
     function setInfWithdrawalDelay(uint256 newDelay) external onlyOwner {
         if (newDelay < MIN_INF_WITHDRAWAL_DELAY || newDelay > MAX_INF_WITHDRAWAL_DELAY) {
             revert InvalidConfiguration();
@@ -347,15 +348,12 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         return Math.mulDiv(reserve, WAD, debt);
     }
 
-    /// @notice Maximum USD of residual reserve that INF holders may remove while preserving the target ratio.
+    /// @notice USD value of collateral available for INF exits after rounding target backing up.
+    /// @dev A capacity bound, not a guaranteed fill: INF/USD/output rounding may pay less or zero.
+    ///      Uses the same collateral budget as settlement and excludes earmarked claims.
     function maxDefundableUsd() public view returns (uint256) {
-        uint256 reserve = reserveUsd();
-        uint256 debt = debtUsd();
-        if (debt == 0) return reserve;
-
-        uint256 minReserve = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
-        if (reserve <= minReserve) return 0;
-        return reserve - minReserve;
+        uint256 price = collateralPriceUsd();
+        return _collateralToUsd(_availableWithdrawalCollateral(reserveCollateral(), debtUsd(), price), price);
     }
 
     /// @notice Effective issuance floor after a fresh primary observation; zero outside recovery pricing.
@@ -451,6 +449,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
     /// @dev Partial fills remain retryable unless only collateral-rounding dust remains after a payout.
+    ///      Eligible cohorts share capacity in first-successful-settlement order, not request/maturity order.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
@@ -633,12 +632,8 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         _syncRecovery(reserveValue, debt, supply);
         if (reserveValue <= debt) return (0, 0, price);
 
-        uint256 minimumReserveUsd = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
-        if (reserveValue <= minimumReserveUsd) return (0, 0, price);
-        uint256 minimumReserveCollateral = Math.mulDiv(minimumReserveUsd, WAD, price, Math.Rounding.Ceil);
-        if (reserve <= minimumReserveCollateral) return (0, 0, price);
-
-        uint256 availableCollateral = reserve - minimumReserveCollateral;
+        uint256 availableCollateral = _availableWithdrawalCollateral(reserve, debt, price);
+        if (availableCollateral == 0) return (0, 0, price);
         uint256 equity = reserveValue - debt;
         uint256 maximumUsdOut = _collateralToUsd(availableCollateral, price);
         filledInf = Math.min(requestedInf, Math.mulDiv(maximumUsdOut, supply, equity));
@@ -648,6 +643,21 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
         if (!_withinDebtRatio(debt, _collateralToUsd(reserve - collateralOut, price), targetDebtRatioBps)) {
             revert DebtRatioTooHigh();
         }
+    }
+
+    /// @dev Round senior backing up in USD and then collateral, just as settlement requires.
+    function _availableWithdrawalCollateral(uint256 reserve, uint256 debt, uint256 price)
+        internal
+        view
+        returns (uint256)
+    {
+        if (debt == 0) return reserve;
+        uint256 minimumReserveUsd = Math.mulDiv(debt, BPS, targetDebtRatioBps, Math.Rounding.Ceil);
+        // Return before converting an unaffordable requirement to collateral;
+        // that conversion could overflow at an extreme low price.
+        if (_collateralToUsd(reserve, price) <= minimumReserveUsd) return 0;
+        uint256 minimumReserveCollateral = Math.mulDiv(minimumReserveUsd, WAD, price, Math.Rounding.Ceil);
+        return reserve > minimumReserveCollateral ? reserve - minimumReserveCollateral : 0;
     }
 
     /// @dev Called only after a nonzero payout, using the updated backing/supply and the fill's price.

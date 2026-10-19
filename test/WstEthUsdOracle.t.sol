@@ -20,6 +20,10 @@ contract RevertingOracle is IPriceOracle {
     }
 }
 
+contract EmptyFallback {
+    fallback() external {}
+}
+
 contract WstEthUsdOracleTest is Test {
     uint256 internal constant WAD = 1e18;
     uint256 internal constant NOW = 10 days;
@@ -172,6 +176,52 @@ contract WstEthUsdOracleTest is Test {
         assertFalse(fallbackUsed);
     }
 
+    function testConstructorAllowsRevertingFallbackAndDiagnosticsRecover() public {
+        RevertingOracle source = new RevertingOracle();
+        source.setUnavailable(true);
+        WstEthUsdOracle configured =
+            new WstEthUsdOracle(IWstETH(address(wstETH)), IAggregatorV3(address(stEthUsd)), source, MAX_STALENESS, 200);
+        assertEq(configured.price(), 3_528 * WAD);
+        (uint256 quote, bool used) = configured.redemptionPrice();
+        assertEq(quote, 3_528 * WAD);
+        assertFalse(used);
+
+        stEthUsd.setUnavailable(true);
+        vm.expectRevert(WstEthUsdOracle.FallbackUnavailable.selector);
+        configured.redemptionPrice();
+        source.setUnavailable(false);
+        (quote, used) = configured.redemptionPrice();
+        assertEq(quote, 3_570 * WAD);
+        assertTrue(used);
+    }
+
+    function testConstructorAllowsZeroFallbackAndDiagnosticsRecover() public {
+        fallbackOracle.setPrice(0);
+        WstEthUsdOracle configured = new WstEthUsdOracle(
+            IWstETH(address(wstETH)), IAggregatorV3(address(stEthUsd)), fallbackOracle, MAX_STALENESS, 200
+        );
+        assertEq(configured.price(), 3_528 * WAD);
+        (uint256 quote, bool used) = configured.redemptionPrice();
+        assertEq(quote, 3_528 * WAD);
+        assertFalse(used);
+
+        stEthUsd.setUnavailable(true);
+        vm.expectRevert(WstEthUsdOracle.FallbackUnavailable.selector);
+        configured.redemptionPrice();
+        fallbackOracle.setPrice(3_500 * WAD);
+        (quote, used) = configured.redemptionPrice();
+        assertEq(quote, 3_570 * WAD);
+        assertTrue(used);
+    }
+
+    function testConstructorRejectsMalformedSuccessfulFallbackResponse() public {
+        EmptyFallback empty = new EmptyFallback();
+        vm.expectRevert(WstEthUsdOracle.FallbackUnavailable.selector);
+        new WstEthUsdOracle(
+            IWstETH(address(wstETH)), IAggregatorV3(address(stEthUsd)), IPriceOracle(address(empty)), MAX_STALENESS, 200
+        );
+    }
+
     function testFallbackPremiumRoundsUp() public {
         stEthUsd.setUnavailable(true);
         fallbackOracle.setPrice(1);
@@ -196,13 +246,6 @@ contract WstEthUsdOracleTest is Test {
             MAX_STALENESS,
             200
         );
-
-        fallbackOracle.setPrice(0);
-        vm.expectRevert(WstEthUsdOracle.FallbackUnavailable.selector);
-        new WstEthUsdOracle(
-            IWstETH(address(wstETH)), IAggregatorV3(address(stEthUsd)), fallbackOracle, MAX_STALENESS, 200
-        );
-        fallbackOracle.setPrice(3_500 * WAD);
 
         vm.expectRevert(WstEthUsdOracle.InvalidConfiguration.selector);
         new WstEthUsdOracle(IWstETH(address(wstETH)), IAggregatorV3(address(stEthUsd)), fallbackOracle, 0, 200);

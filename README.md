@@ -37,6 +37,8 @@ The reserve is non-upgradeable and has an OpenZeppelin two-step owner serving as
 
 See [DESIGN.md](DESIGN.md) for the accounting model and state transitions and [RECAPITALIZATION.md](RECAPITALIZATION.md) for the draft pricing specification and economic review gates.
 
+Eligible withdrawal cohorts consume shared capacity in first-successful-settlement order. Short epochs can create overlapping windows; reducing future withdrawal delays can invert maturity order. Requests reserve no FIFO priority or capacity. `maxDefundableUsd()` uses settlement's collateral backing budget, but INF and output rounding can still reduce an individual fill to zero. See [the withdrawal policy](DESIGN.md#defund) and [the issue #31 resolution and migration notes](docs/issue-31-resolution.md).
+
 ## Dependencies
 
 - Foundry

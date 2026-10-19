@@ -100,17 +100,27 @@ contract UniswapV3TwapOracle is IPriceOracle {
         secondsAgos[0] = twapWindow;
 
         (int56[] memory ticks, uint160[] memory secondsPerLiquidity) = pool.observe(secondsAgos);
-        if (ticks.length != 2 || secondsPerLiquidity.length != 2 || secondsPerLiquidity[1] <= secondsPerLiquidity[0]) {
-            revert InvalidObservation();
+        if (ticks.length != 2 || secondsPerLiquidity.length != 2) revert InvalidObservation();
+
+        // V3 accumulators intentionally wrap in their source widths. Subtract
+        // before widening; a valid window's tick delta always fits in int56.
+        int56 tickDelta56;
+        uint160 liquidityDelta160;
+        unchecked {
+            tickDelta56 = ticks[1] - ticks[0];
+            liquidityDelta160 = secondsPerLiquidity[1] - secondsPerLiquidity[0];
         }
 
-        uint256 liquidityDelta = uint256(secondsPerLiquidity[1]) - uint256(secondsPerLiquidity[0]);
+        uint256 liquidityDelta = uint256(liquidityDelta160);
+        // Even maximum uint128 liquidity accumulates at least one unit per
+        // second. This also rejects zero deltas before division.
+        if (liquidityDelta < twapWindow) revert InvalidObservation();
         uint256 harmonicLiquidity = Math.mulDiv(uint256(twapWindow), Q128, liquidityDelta);
         if (harmonicLiquidity < minimumLiquidity || pool.liquidity() < minimumLiquidity) {
             revert InsufficientLiquidity();
         }
 
-        int256 tickDelta = int256(ticks[1]) - int256(ticks[0]);
+        int256 tickDelta = int256(tickDelta56);
         int256 window = int256(uint256(twapWindow));
         int256 roundedTick = tickDelta / window;
         if (tickDelta < 0 && tickDelta % window != 0) --roundedTick;
