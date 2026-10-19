@@ -114,6 +114,24 @@ contract OracleFallbackTest is Test {
         assertFalse(fallbackUsed);
     }
 
+    function testRouterReplacementDuringFallbackOutagePreservesPrimaryOnlyPayouts() public {
+        fallbackOracle.setPrice(0);
+        WstEthUsdOracle replacement = new WstEthUsdOracle(
+            IWstETH(address(new MockWstETH(WAD))), IAggregatorV3(address(primaryFeed)), fallbackOracle, 1 hours, 200
+        );
+        reserve.setOracle(replacement);
+        vm.prank(BOB);
+        assertGt(reserve.redeem(1_000 * WAD, 0, BOB), 0);
+
+        primaryFeed.setUnavailable(true);
+        fallbackOracle.setPrice(3_000 * WAD);
+        (, bool fallbackUsed) = replacement.redemptionPrice();
+        assertTrue(fallbackUsed);
+        vm.prank(BOB);
+        vm.expectRevert(MockAggregator.FeedUnavailable.selector);
+        reserve.redeem(1_000 * WAD, 0, BOB);
+    }
+
     function testStalePrimaryHaltsRiskAndJuniorActions() public {
         INFToken inf = reserve.inf();
         vm.prank(ALICE);
