@@ -192,6 +192,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Change the delay for future cohorts only; requests already in a cohort are unaffected.
+    /// @dev Reducing the delay can make a later cohort mature first; there is no FIFO priority.
     function setInfWithdrawalDelay(uint256 newDelay) external onlyOwner {
         if (newDelay < MIN_INF_WITHDRAWAL_DELAY || newDelay > MAX_INF_WITHDRAWAL_DELAY) {
             revert InvalidConfiguration();
@@ -448,6 +449,7 @@ contract NaNReserve is ReentrancyGuard, Ownable2Step {
 
     /// @notice Settle a matured cohort at the then-current price and debt ratio; anyone may call this.
     /// @dev Partial fills remain retryable unless only collateral-rounding dust remains after a payout.
+    ///      Eligible cohorts share capacity in first-successful-settlement order, not request/maturity order.
     function settleDefundEpoch(uint256 series, uint256 epoch) external nonReentrant {
         WithdrawalEpoch storage requestEpoch = withdrawalEpochs[series][epoch];
         if (requestEpoch.requestedInf == 0) revert NoWithdrawalRequest();
